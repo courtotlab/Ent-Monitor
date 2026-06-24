@@ -1,5 +1,5 @@
-def main():
-  print("Hello from ent-monitor!")
+import asyncio
+from layers.ingestion.orchestrator import run_ingestion
 
 if __name__ == "__main__":
-  main()
+    asyncio.run(run_ingestion())
