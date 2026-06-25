@@ -16,7 +16,7 @@ async def scrape_instagram(client, creators: list[str], limit_posts: int, limit_
             shortCode = item.get("shortCode")
             if shortCode and len(creator_post_urls) < 5 * len(creators):
                 creator_post_urls.append(f"https://www.instagram.com/p/{shortCode}/")
-            if item.get("id") or item.get("shortCode") or item.get("url"):
+            if "error" not in item and (item.get("id") or item.get("shortCode")):
                 posts.append(norm_instagram(item, "creator_monitor", item.get("ownerUsername", "")))
     except Exception as e:
         print(f"[IG] Creator scrape error: {e}")
@@ -50,7 +50,7 @@ async def scrape_instagram(client, creators: list[str], limit_posts: int, limit_
                 "proxyConfiguration": {"useApifyProxy": True},
             })
             async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-                if item.get("id") or item.get("shortCode") or item.get("url"):
+                if "error" not in item and (item.get("id") or item.get("shortCode")):
                     posts.append(norm_instagram(item, "engager_sample", item.get("ownerUsername", "")))
         except Exception as e:
             print(f"[IG] Engager scrape error: {e}")
@@ -67,7 +67,7 @@ async def scrape_instagram_explore(client, limit_posts: int) -> list[NormalizedP
             "proxyConfiguration": {"useApifyProxy": True},
         })
         async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-            if item.get("id") or item.get("shortCode") or item.get("url"):
+            if "error" not in item and (item.get("id") or item.get("shortCode")):
                 posts.append(norm_instagram(item, "explore_feed", "explore"))
     except Exception as e:
         print(f"[IG] Explore scrape error: {e}")
