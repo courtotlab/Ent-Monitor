@@ -18,17 +18,17 @@ def parse_creators_json(path: str):
             for p in ["TikTok", "Instagram", "YouTube"] if p in data for i in data[p]], data.get("Reddit", [])
 
 async def run_ingestion():
-    p = argparse.ArgumentParser()
-    p.add_argument("--platform", choices=["tiktok", "instagram", "youtube", "reddit", "all"], default="all")  # Platforms to scrape
-    p.add_argument("--limit-creators", type=int, default=0)  # Limit creator list count (0 = all)
-    p.add_argument("--limit-posts", type=int, default=2)  # Posts to scrape per creator/explore
-    p.add_argument("--limit-engagers", type=int, default=1)  # Commenters to sample per post
-    p.add_argument("--posts-per-engager", type=int, default=2)  # Posts to scrape per commenter
-    p.add_argument("--reddit-limit", type=int, default=5)  # Hot submissions per subreddit
-    p.add_argument("--explore-count", type=int, default=1)  # Explore feed scrape runs
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--platform", choices=["tiktok", "instagram", "youtube", "reddit", "all"], default="all")  # Platforms to scrape
+    parser.add_argument("--limit-creators", type=int, default=0)  # Limit creator list count (0 = all)
+    parser.add_argument("--limit-posts", type=int, default=2)  # Posts to scrape per creator/explore
+    parser.add_argument("--limit-engagers", type=int, default=1)  # Commenters to sample per post
+    parser.add_argument("--posts-per-engager", type=int, default=2)  # Posts to scrape per commenter
+    parser.add_argument("--reddit-limit", type=int, default=5)  # Hot submissions per subreddit
+    parser.add_argument("--explore-count", type=int, default=1)  # Explore feed scrape runs
+    args = parser.parse_args()
 
-    creators, subreddits = parse_creators_json("layers/creators.json")
+    creators, subreddits = parse_creators_json("config/creators.json")
     client = Actor.new_client() if os.getenv("APIFY_TOKEN") else None
 
     # Run batch scrapers

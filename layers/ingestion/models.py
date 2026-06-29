@@ -5,8 +5,8 @@ from typing import Optional, List, Dict, Any
 class NormalizedPost:
     post_id: str
     platform: str
-    source_method: str
-    source_method_conf: str
+    source: str
+    context: str
     creator_id: str
     caption_text: str
     ocr_text: Optional[str] = None
