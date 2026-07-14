@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 import numpy as np
@@ -9,43 +8,62 @@ SBERT_THRESHOLD = 0.38
 
 
 class SbertFilter:
-    def __init__(self, model: SentenceTransformer | None = None):
-        self.model = model or SentenceTransformer(MODEL_NAME)
-        self._anchor_matrix: np.ndarray | None = None
-        self._anchor_texts: list[str] = []
+  def __init__(self, model: SentenceTransformer | None = None):
+    self.model = model or SentenceTransformer(MODEL_NAME)
+    self._anchor_matrix: np.ndarray | None = None
+    self._anchor_texts: list[str] = []
 
-    def load_anchors(self, anchors: list[tuple[str, list[float]]]) -> None:
-        if not anchors:
-            raise ValueError("No active SBERT anchors found in database. Run init/002_seed_anchors.py first.")
-        self._anchor_texts = [text for text, _ in anchors]
-        matrix = np.array([emb for _, emb in anchors], dtype=np.float32)
-        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        self._anchor_matrix = matrix / norms
+  def load_anchors(self, anchors: list[tuple[str, list[float]]]) -> None:
+    if not anchors:
+      raise ValueError(
+        "No active SBERT anchors found in database. Run init/002_seed_anchors.py first."
+      )
+    self._anchor_texts = [text for text, _ in anchors]
+    matrix = np.array([emb for _, emb in anchors], dtype=np.float32)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    self._anchor_matrix = matrix / norms
 
-    def score_text(self, text: str) -> float:
-        if self._anchor_matrix is None:
-            raise RuntimeError("Anchors not loaded. Call load_anchors() first.")
-        if not (text or "").strip():
-            return 0.0
-        emb = self.model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
-        scores = self._anchor_matrix @ emb
-        return float(np.max(scores))
+  def score_text(self, text: str) -> float:
+    if self._anchor_matrix is None:
+      raise RuntimeError("Anchors not loaded. Call load_anchors() first.")
+    if not (text or "").strip():
+      return 0.0
+    emb = self.model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
+    scores = self._anchor_matrix @ emb
+    return float(np.max(scores))
 
-    def score_posts(self, posts: list[dict[str, Any]]) -> list[tuple[dict[str, Any], float]]:
-        if self._anchor_matrix is None:
-            raise RuntimeError("Anchors not loaded. Call load_anchors() first.")
+  def score_texts(self, texts: list[str]) -> list[float]:
+    if self._anchor_matrix is None:
+      raise RuntimeError("Anchors not loaded. Call load_anchors() first.")
 
-        texts = [(post.get("caption_text") or "").strip() for post in posts]
-        if not texts:
-            return []
+    if not texts:
+      return []
 
-        embeddings = self.model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
-        scores = embeddings @ self._anchor_matrix.T
-        max_scores = np.max(scores, axis=1)
+    embeddings = self.model.encode(
+      texts, batch_size=32, convert_to_numpy=True, normalize_embeddings=True
+    )
+    scores = embeddings @ self._anchor_matrix.T
+    max_scores = np.max(scores, axis=1)
 
-        return [(post, float(score)) for post, score in zip(posts, max_scores)]
+    return [float(score) for score in max_scores]
 
-    @staticmethod
-    def passes_threshold(score: float) -> bool:
-        return score >= SBERT_THRESHOLD
+  def score_posts(self, posts: list[dict[str, Any]]) -> list[tuple[dict[str, Any], float]]:
+    if self._anchor_matrix is None:
+      raise RuntimeError("Anchors not loaded. Call load_anchors() first.")
+
+    texts = [(post.get("caption_text") or "").strip() for post in posts]
+    if not texts:
+      return []
+
+    embeddings = self.model.encode(
+      texts, convert_to_numpy=True, normalize_embeddings=True
+    )
+    scores = embeddings @ self._anchor_matrix.T
+    max_scores = np.max(scores, axis=1)
+
+    return [(post, float(score)) for post, score in zip(posts, max_scores)]
+
+  @staticmethod
+  def passes_threshold(score: float) -> bool:
+    return score >= SBERT_THRESHOLD

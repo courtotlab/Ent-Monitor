@@ -1,9 +1,10 @@
-import sys
 import asyncio
 from layers.ingestion.orchestrator import run_ingestion
 
+
 def main():
-    asyncio.run(run_ingestion())
+  asyncio.run(run_ingestion())
+
 
 if __name__ == "__main__":
-    main()
+  main()
