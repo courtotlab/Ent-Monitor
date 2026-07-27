@@ -1,0 +1,95 @@
+"""State schema for the Layer 3 Analysis agentic loop.
+
+Every TypedDict here maps 1:1 to the spec in implementation_plan.md §3.
+Annotations are intentionally terse — the plan document is the source of
+truth for *why*; this file is the source of truth for *what*.
+"""
+
+from typing import Literal, Optional, TypedDict
+
+
+#  Evidence gap — written by ASSESS, CLASSIFY, or VERIFY; consumed by RESEARCH
+class EvidenceGap(TypedDict):
+  missing: str
+  suggested_query: str
+  suggested_tool: Literal[
+    "pubmed_search",
+    "duckduckgo_search",
+    "semantic_scholar_search",
+    "crossref_search",
+  ]
+  reason: str  # "zero_pubmed_results" | "low_relevance" | "thin_evidence" | "classify_gap" | "bad_citation"
+
+
+#  VERIFY output — one per VERIFY pass
+class VerifyFinding(TypedDict):
+  citation_valid: Optional[bool]  # True/False if checked; None if tool failure
+  citation_relevant: bool
+  label_consistent: bool
+  citation_check_failed: bool  # True → tool failure, NOT a confirmed-bad PMID
+  notes: str
+
+
+#  Single piece of evidence found by RESEARCH
+class EvidenceItem(TypedDict):
+  source: Literal["pubmed", "duckduckgo", "semantic_scholar", "crossref"]
+  title: str
+  url: str
+  pmid: Optional[str]
+  snippet: str  # abstract or first ~300 chars
+  is_relevant: bool
+  contradicts_harm: bool
+
+
+#  Tool failure record
+class ToolError(TypedDict):
+  tool: str
+  error_type: str  # "timeout" | "rate_limit" | "parse_error" | "circuit_open"
+  timestamp: str  # ISO 8601
+  query: str
+
+
+#  Main graph state
+class AgentState(TypedDict):
+  #  Input (set once by orchestrator)
+  run_id: str
+  clusters_queue: list[dict]  # clusters waiting to be processed
+  cluster_results: list[dict] # accumulated final results for the run
+
+  #  Active Cluster State
+  cluster_id: str
+  posts: list[dict]
+  search_context: str
+  is_known_trend: bool
+  triage_flag: str  # "likely_harmful" | "unclear" | "likely_safe"
+
+  #  Research accumulator (append-only)
+  search_queries: list[str]
+  evidence: list[EvidenceItem]
+  evidence_gap: Optional[EvidenceGap]
+  evidence_score: float
+  tool_errors: list[ToolError]
+
+  #  Classification
+  label: Optional[Literal["HARMFUL", "CONCERNING", "SAFE"]]
+  confidence: float
+  citations: list[dict]
+  risk_score: float
+  reasoning: str
+  needs_more_evidence: bool
+  no_evidence_found: bool
+  downgrade_reason: Optional[str]
+
+  #  Verification
+  verify_finding: Optional[VerifyFinding]
+
+  #  Report
+  report: Optional[dict]
+
+  #  DECIDE flags (set by decide_node, read by REPORT)
+  needs_human_review: bool
+  tool_degraded: bool
+
+  #  Loop control (split budgets)
+  research_retries_left: int  # starts at 3 — edges (1) (2)
+  verify_retries_left: int  # starts at 3 — edges (3) (4)

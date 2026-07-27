@@ -1,0 +1,182 @@
+"""Routing logic for the Layer 3 Analysis graph.
+
+Contains:
+- EVIDENCE_THRESHOLD constant
+- compute_evidence_score()   — deterministic formula (§3 ASSESS)
+- build_evidence_gap()       — picks next query + tool when score is low
+- route_after_assess()       — ASSESS → CLASSIFY or RESEARCH
+- route_after_classify()     — CLASSIFY → VERIFY or RESEARCH
+- route_after_verify()       — VERIFY → DECIDE, RESEARCH, or CLASSIFY
+- route_after_decide()       — DECIDE → REPORT or pop_cluster
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from langgraph.types import Command
+
+from layers.analysis.state import EvidenceGap
+
+if TYPE_CHECKING:
+  from layers.analysis.state import AgentState
+
+# Deliberately modest — don't demand 3 perfect papers before proceeding.
+EVIDENCE_THRESHOLD = 0.45
+
+
+#  Deterministic evidence-quality formula (§3 ASSESS)
+def compute_evidence_score(state: AgentState) -> float:
+  """Pure formula — no LLM.  Returns 0.0–1.0."""
+  evidence = state["evidence"]
+  if not evidence:
+    return 0.0
+
+  pubmed_count = sum(1 for e in evidence if e["source"] == "pubmed")
+  other_count = sum(1 for e in evidence if e["source"] != "pubmed")
+  source_score = min(pubmed_count * 0.4 + other_count * 0.15, 1.0)
+
+  relevant_count = sum(1 for e in evidence if e.get("is_relevant", False))
+  relevance_score = min(relevant_count / max(len(evidence), 1), 1.0)
+
+  contradictory = sum(1 for e in evidence if e.get("contradicts_harm", False))
+  contradiction_penalty = min(contradictory * 0.15, 0.4)
+
+  raw = (0.55 * source_score) + (0.45 * relevance_score) - contradiction_penalty
+  return max(0.0, min(raw, 1.0))
+
+
+#  Build the next evidence gap struct (§3 ASSESS)
+def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
+  """Decide what's missing and suggest a query + tool for RESEARCH."""
+  evidence = state["evidence"]
+  pubmed_count = sum(1 for e in evidence if e["source"] == "pubmed")
+
+  if pubmed_count == 0:
+    return EvidenceGap(
+      missing="No peer-reviewed literature found yet",
+      suggested_query=f"{state['search_context']} pediatric harm mechanism",
+      suggested_tool="pubmed_search",
+      reason="zero_pubmed_results",
+    )
+
+  relevant = sum(1 for e in evidence if e.get("is_relevant", False))
+  if relevant == 0:
+    return EvidenceGap(
+      missing="Found literature but none directly addresses this specific behavior",
+      suggested_query=f"{state['search_context']} case report OR adverse event",
+      suggested_tool="semantic_scholar_search",
+      reason="low_relevance",
+    )
+
+  return EvidenceGap(
+    missing="Insufficient evidence depth — trying news/social context",
+    suggested_query=f"{state['search_context']} TikTok trend danger",
+    suggested_tool="duckduckgo_search",
+    reason="thin_evidence",
+  )
+
+
+#  Route: after ASSESS
+def route_after_assess(state: AgentState) -> Command:
+  """Edge (1) — ASSESS routes to CLASSIFY (sufficient) or RESEARCH (gap)."""
+  score = compute_evidence_score(state)
+  retries_left = state["research_retries_left"]
+
+  if score >= EVIDENCE_THRESHOLD or retries_left <= 0:
+    no_evidence = score == 0.0 and retries_left <= 0
+    return Command(
+      goto="classify",
+      update={
+        "evidence_score": score,
+        "no_evidence_found": no_evidence,
+      },
+    )
+
+  gap = build_evidence_gap(state, score)
+  return Command(
+    goto="research",
+    update={
+      "evidence_score": score,
+      "evidence_gap": gap,
+      "research_retries_left": retries_left - 1,
+    },
+  )
+
+
+#  Route: after CLASSIFY
+def route_after_classify(state: AgentState) -> Command:
+  """Edge (2) — CLASSIFY routes to VERIFY or back to RESEARCH."""
+  if state.get("needs_more_evidence") and state["research_retries_left"] > 0:
+    return Command(
+      goto="research",
+      update={
+        "research_retries_left": state["research_retries_left"] - 1,
+        "needs_more_evidence": False,
+      },
+    )
+  return Command(goto="verify")
+
+
+#  Route: after VERIFY
+def route_after_verify(state: AgentState) -> Command:
+  """Edges (3) (4) — VERIFY routes to DECIDE, RESEARCH, or CLASSIFY."""
+  finding = state["verify_finding"]
+  retries_left = state["verify_retries_left"] > 0
+
+  # A citation that couldn't be checked (tool failure) is NOT a confirmed-bad
+  # PMID — must not trigger edge (3) or consume verify_retries_left.
+  if finding.get("citation_check_failed"):
+    return Command(goto="decide")
+
+  if finding["citation_valid"] is False or not finding["citation_relevant"]:
+    if retries_left:
+      return Command(
+        goto="research",
+        update={
+          "evidence_gap": EvidenceGap(
+            missing=finding["notes"],
+            suggested_query=f"replace citation: {state['search_queries'][-1]}",
+            suggested_tool="pubmed_search",
+            reason="bad_citation",
+          ),
+          "verify_retries_left": state["verify_retries_left"] - 1,
+        },
+      )
+    return Command(goto="decide")
+
+  if not finding["label_consistent"] and retries_left:
+    return Command(
+      goto="classify",
+      update={
+        "verify_retries_left": state["verify_retries_left"] - 1,
+      },
+    )
+
+  return Command(goto="decide")
+
+
+# Clusters must meet this bar to get a full LLM report and appear on the dashboard
+_DASHBOARD_LABELS = {"HARMFUL", "CONCERNING"}
+_DASHBOARD_RISK_THRESHOLD = 0.5
+
+
+#  Route: after DECIDE
+def route_after_decide(state: AgentState) -> Command:
+  """Route to REPORT only for clusters that should appear on the dashboard.
+
+  SAFE low-risk clusters skip REPORT entirely and loop straight back to
+  pop_cluster, saving the LLM call.
+  """
+  label = state.get("label", "CONCERNING")
+  risk_score = state.get("risk_score", 0.0)
+  no_evidence = state.get("no_evidence_found", False)
+
+  if (
+    label in _DASHBOARD_LABELS
+    or risk_score >= _DASHBOARD_RISK_THRESHOLD
+    or no_evidence
+  ):
+    return Command(goto="report")
+
+  return Command(goto="pop_cluster")

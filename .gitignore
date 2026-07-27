@@ -18,3 +18,4 @@ docs/
 # Records
 results/
 tests/
+*.log
