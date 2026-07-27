@@ -58,7 +58,7 @@ async def scrape_tiktok(client, usernames: list[str], limit_posts: int, limit_en
       )
       async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
         if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
-          posts.append(norm_tiktok(item, "engager_sample", item.get("author", {}).get("uniqueId", "")))
+          posts.append(norm_tiktok(item, "engager", item.get("author", {}).get("uniqueId", "")))
     except Exception as e:
       print(f"[TT] Engager scrape error: {e}")
 
@@ -84,7 +84,7 @@ async def scrape_tiktok_explore(client, limit_posts: int) -> list[NormalizedPost
   return posts
 
 
-async def scrape_tiktok_search(client, keywords: list[str], limit_posts: int) -> list[NormalizedPost]:
+async def scrape_tiktok_search(client, keywords: list[str], limit_posts: int, source: str) -> list[NormalizedPost]:
   posts = []
   if not keywords:
     return posts
@@ -99,7 +99,7 @@ async def scrape_tiktok_search(client, keywords: list[str], limit_posts: int) ->
     )
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
       if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
-        posts.append(norm_tiktok(item, "gdelt_search", "search"))
+        posts.append(norm_tiktok(item, source, "search"))
   except Exception as e:
     print(f"[TT] Search scrape error: {e}")
 

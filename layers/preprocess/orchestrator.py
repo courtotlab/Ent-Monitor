@@ -13,7 +13,6 @@ from .semantic_filter import SBERT_THRESHOLD, SbertFilter
 class PreprocessStats:
   input_total: int = 0
   quality_passed: int = 0
-  quality_dropped: int = 0
   inserted: int = 0
   duplicate_db: int = 0
   sbert_scored: int = 0
@@ -44,13 +43,23 @@ def run_preprocessing(results_file: str | None = None) -> PreprocessStats:
     )
 
   posts = load_posts(path)
+  return process_posts(
+    posts,
+    source_name=path.name,
+    filtered_path=results_dir / "filtered" / path.name,
+  )
+
+
+def process_posts(
+  posts: list[dict[str, Any]],
+  source_name: str = "in-memory batch",
+  filtered_path: Path | None = None,
+) -> PreprocessStats:
+  """Apply quality and semantic gates, then persist the scored posts once."""
   stats = PreprocessStats(input_total=len(posts))
 
   quality = run_quality_filter(posts)
   stats.quality_passed = quality.stats.passed
-  stats.quality_dropped = (
-    stats.input_total - stats.quality_passed - quality.stats.duplicate_in_batch
-  )
 
   anchors = fetch_active_anchors()
   sbert = SbertFilter()
@@ -95,13 +104,16 @@ def run_preprocessing(results_file: str | None = None) -> PreprocessStats:
     else:
       stats.sbert_failed += 1
 
-  filtered_dir = results_dir / "filtered"
-  filtered_dir.mkdir(parents=True, exist_ok=True)
-  filtered_path = filtered_dir / path.name
-  with filtered_path.open("w", encoding="utf-8") as f:
-    json.dump(filtered_posts, f, indent=2, ensure_ascii=False)
+  if filtered_path:
+    filtered_path.parent.mkdir(parents=True, exist_ok=True)
+    with filtered_path.open("w", encoding="utf-8") as f:
+      json.dump(filtered_posts, f, indent=2, ensure_ascii=False)
 
-  _print_report(path, stats, quality.stats)
+  _print_report(Path(source_name), stats, quality.stats)
+  
+  # if filtered_path:
+  #   print(f"\nSaved {len(filtered_posts)} filtered posts to {filtered_path}")
+    
   return stats
 
 

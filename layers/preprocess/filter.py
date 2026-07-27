@@ -10,7 +10,6 @@ BOT_LIKE_RATIO = 1000
 
 @dataclass
 class QualityFilterStats:
-  total: int = 0
   passed: int = 0
   duplicate_in_batch: int = 0
   non_english: int = 0
@@ -51,7 +50,7 @@ def _is_english(text: str) -> bool:
 
 def run_quality_filter(posts: list[dict[str, Any]]) -> QualityFilterResult:
   """Quality filter — dedup (in-batch), spam/bot flag, language, minimum content."""
-  stats = QualityFilterStats(total=len(posts))
+  stats = QualityFilterStats()
   seen: set[tuple[str, str]] = set()
   survivors: list[dict[str, Any]] = []
 

@@ -65,7 +65,7 @@ def norm_reddit(post_data, subreddit: str, is_praw: bool) -> NormalizedPost:
     return NormalizedPost(
       post_id=str(post_data.get("id", "")),
       platform="reddit",
-      source="reddit_json",
+      source="reddit_comm",
       creator_id=str(post_data.get("author") or "deleted"),
       caption_text=f"{post_data.get('title', '')}\n\n{post_data.get('selftext', '')}".strip(),
       posted_at=datetime.datetime.fromtimestamp(

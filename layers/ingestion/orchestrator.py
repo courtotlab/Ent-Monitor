@@ -77,8 +77,16 @@ async def run_ingestion():
       posts.extend([post.to_dict() for post in res])
 
     if posts:
+      # out = Path("results") / f"collection_{datetime.datetime.now():%Y%m%d_%H%M%S}.json"
+      # out.parent.mkdir(parents=True, exist_ok=True)
+      # with open(out, "w", encoding="utf-8") as f:
+      #   json.dump(posts, f, indent=4, ensure_ascii=False)
+      # print(f"Saved {len(posts)} batch posts to {out.name}")
       inserted_count = 0
       for post in posts:
         if insert_post(post):
           inserted_count += 1
-      print(f"Saved {inserted_count} / {len(posts)} batch posts to DB")
+
+
+if __name__ == "__main__":
+  asyncio.run(run_ingestion())

@@ -11,27 +11,16 @@ class SbertFilter:
   def __init__(self, model: SentenceTransformer | None = None):
     self.model = model or SentenceTransformer(MODEL_NAME)
     self._anchor_matrix: np.ndarray | None = None
-    self._anchor_texts: list[str] = []
 
   def load_anchors(self, anchors: list[tuple[str, list[float]]]) -> None:
     if not anchors:
       raise ValueError(
         "No active SBERT anchors found in database. Run init/002_seed_anchors.py first."
       )
-    self._anchor_texts = [text for text, _ in anchors]
     matrix = np.array([emb for _, emb in anchors], dtype=np.float32)
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     self._anchor_matrix = matrix / norms
-
-  def score_text(self, text: str) -> float:
-    if self._anchor_matrix is None:
-      raise RuntimeError("Anchors not loaded. Call load_anchors() first.")
-    if not (text or "").strip():
-      return 0.0
-    emb = self.model.encode(text, convert_to_numpy=True, normalize_embeddings=True)
-    scores = self._anchor_matrix @ emb
-    return float(np.max(scores))
 
   def score_texts(self, texts: list[str]) -> list[float]:
     if self._anchor_matrix is None:

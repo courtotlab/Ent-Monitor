@@ -77,4 +77,4 @@ def scrape_reddit_sync(subreddits: list[str], limit_posts: int) -> list[Normaliz
   return posts
 
 async def scrape_reddit(subreddits: list[str], limit_posts: int) -> list[NormalizedPost]:
-    return await asyncio.to_thread(scrape_reddit_sync, subreddits, limit_posts)
+  return await asyncio.to_thread(scrape_reddit_sync, subreddits, limit_posts)

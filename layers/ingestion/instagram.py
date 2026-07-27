@@ -59,7 +59,7 @@ async def scrape_instagram(client, usernames: list[str], limit_posts: int, limit
       )
       async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
         if "error" not in item and (item.get("id") or item.get("shortCode")):
-          posts.append(norm_instagram(item, "engager_sample", item.get("ownerUsername", "")))
+          posts.append(norm_instagram(item, "engager", item.get("ownerUsername", "")))
     except Exception as e:
       print(f"[IG] Engager scrape error: {e}")
 
@@ -87,7 +87,7 @@ async def scrape_instagram_explore(client, limit_posts: int) -> list[NormalizedP
   return posts
 
 
-async def scrape_instagram_search(client, keywords: list[str], limit_posts: int) -> list[NormalizedPost]:
+async def scrape_instagram_search(client, keywords: list[str], limit_posts: int, source: str) -> list[NormalizedPost]:
   posts = []
   if not keywords: return posts
   try:
@@ -102,7 +102,7 @@ async def scrape_instagram_search(client, keywords: list[str], limit_posts: int)
     )
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
       if "error" not in item and (item.get("id") or item.get("shortCode")):
-        posts.append(norm_instagram(item, "gdelt_search", "search"))
+        posts.append(norm_instagram(item, source, "search"))
   except Exception as e:
     print(f"[IG] Search scrape error: {e}")
 

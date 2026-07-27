@@ -29,6 +29,7 @@ CREATE TABLE posts (
     caption_text        TEXT,                    -- Original text caption of the post
     transcript_text     TEXT,                    -- Combined OCR/audio transcript
     hashtags            JSONB,
+    metadata            JSONB NOT NULL DEFAULT '{}', -- Source-specific URLs and discovery provenance
     likes               INTEGER DEFAULT 0,       -- Number of likes on the post
     comments            INTEGER DEFAULT 0,       -- Number of comments on the post
     shares              INTEGER DEFAULT 0,       -- Number of shares of the post
@@ -39,6 +40,7 @@ CREATE TABLE posts (
     velocity_next_check_at TIMESTAMPTZ,          -- Timestamp when the post should be re-queried for velocity
     sbert_score         REAL,                    -- Max cosine similarity vs anchors
     gate4_relevant      BOOLEAN,                 -- Agent determination on ENT relevance
+
     gate4_category      TEXT,                    -- Categorization by agent
     linked_trend_id     TEXT,                    -- FK to active_trends
     collected_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- Timestamp when our system scraped the post
@@ -46,12 +48,13 @@ CREATE TABLE posts (
 
     PRIMARY KEY (post_id, platform),
     CONSTRAINT chk_posts_source CHECK (source IN (
-        'creator_monitor', 'engager_sample', 'reddit_stream',
-        'explore_sample', 'trend_verification', 'reddit_json'))
+        'creator_monitor', 'engager', 'reddit_stream',
+        'explore_feed', 'gtrends_search', 'gdelt_news', 'reddit_comm'))
 );
 
 CREATE INDEX idx_posts_collected          ON posts(collected_at);
 CREATE INDEX idx_posts_source             ON posts(source);
+CREATE INDEX idx_posts_metadata           ON posts USING gin(metadata);
 CREATE INDEX idx_posts_velocity_schedule  ON posts(velocity_next_check_at) WHERE velocity_active = TRUE;
 CREATE INDEX idx_posts_gate4              ON posts(gate4_relevant);
 CREATE INDEX idx_posts_gate4_category     ON posts(gate4_category) WHERE gate4_relevant = TRUE;
@@ -83,7 +86,7 @@ CREATE TABLE active_trends (
     risk_score          REAL NOT NULL,           -- Computed risk (0.0 to 1.0)
     post_count          INTEGER DEFAULT 0,       -- Total confirmed posts for this trend
     platforms           JSONB,                   -- Platforms this trend appears on
-    discovery_source    TEXT,                    -- How the trend was initially discovered (e.g. gt_spike)
+    discovery_source    TEXT,                    -- How the trend was initially discovered (e.g. news_match)
     first_detected_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at        TIMESTAMPTZ,             -- Timestamp when the last post was added to this trend
     lifecycle_status    TEXT NOT NULL DEFAULT 'emergence',
@@ -120,10 +123,10 @@ CREATE TABLE trend_lifecycle_history (
 CREATE INDEX idx_history_trend ON trend_lifecycle_history(trend_id, occurred_at);
 
 -- Table 6: trend_signals
--- Extracted signals (e.g. Google Trends spikes, news matches).
+-- Extracted signals that still require a verification workflow (e.g. news matches).
 CREATE TABLE trend_signals (
     signal_id           SERIAL PRIMARY KEY,      -- Unique ID for the extracted signal
-    signal_type         TEXT NOT NULL,           -- gt_spike | news_match | slow_spread
+    signal_type         TEXT NOT NULL,           -- news_match | slow_spread
     signal_data         JSONB NOT NULL DEFAULT '{}',
     search_query        TEXT NOT NULL,           -- Query to be searched to verify this signal
     search_platforms    JSONB NOT NULL DEFAULT '["reddit","tiktok","instagram"]',
@@ -139,7 +142,7 @@ CREATE TABLE trend_signals (
     search_completed_at TIMESTAMPTZ,             -- Timestamp when the verification search finished
     error_msg           TEXT,                    -- Any error message encountered during verification
 
-    CONSTRAINT chk_signals_type CHECK (signal_type IN ('gt_spike', 'news_match', 'slow_spread'))
+    CONSTRAINT chk_signals_type CHECK (signal_type IN ('news_match', 'slow_spread'))
 );
 
 CREATE INDEX idx_signals_pending      ON trend_signals(search_status) WHERE search_status = 'pending';
@@ -147,8 +150,9 @@ CREATE INDEX idx_signals_type         ON trend_signals(signal_type);
 CREATE INDEX idx_signals_trend        ON trend_signals(linked_trend_id) WHERE linked_trend_id IS NOT NULL;
 CREATE INDEX idx_signals_dismissed    ON trend_signals(signal_type, dismissed) WHERE dismissed = FALSE;
 CREATE INDEX idx_signals_detected     ON trend_signals(detected_at);
-CREATE INDEX idx_signals_news_url     ON trend_signals((signal_data->>'news_source_url'), detected_at) WHERE signal_type = 'news_match';
-CREATE INDEX idx_signals_gt_dedup     ON trend_signals(search_query, detected_at) WHERE signal_type = 'gt_spike';
+CREATE UNIQUE INDEX idx_signals_news_url ON trend_signals(
+    (signal_data->>'news_source_url'), search_query
+) WHERE signal_type = 'news_match';
 
 -- Table 7: pipeline_state
 -- Generic KV store for worker state.

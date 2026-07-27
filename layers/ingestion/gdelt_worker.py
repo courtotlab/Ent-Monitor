@@ -6,15 +6,13 @@ import zipfile
 import pandas as pd
 import requests
 import spacy
-import spacy.cli
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from psycopg2.extras import Json
 
+from layers.preprocess.queries import fetch_active_anchors
 from layers.preprocess.semantic_filter import SbertFilter
 from layers.shared.db import get_connection
-from layers.shared.sbert_utils import deserialize, serialize
-from layers.shared.trend_utils import make_trend_id
 
 USER_AGENT = "Mozilla/5.0 (compatible; ENTSurveillanceBot/1.0)"
 LAST_UPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
@@ -290,22 +288,11 @@ def run_proxy_sbert(
 ) -> list[int]:
   if not proxy_texts or not anchors:
     return []
+
   sbert_filter.load_anchors(anchors)
+  scores = sbert_filter.score_texts(proxy_texts)
 
-  import numpy as np
-
-  embeddings = sbert_filter.model.encode(
-    proxy_texts,
-    batch_size=32,
-    show_progress_bar=False,
-    convert_to_numpy=True,
-    normalize_embeddings=True,
-  )
-
-  scores = embeddings @ sbert_filter._anchor_matrix.T
-  max_scores = np.max(scores, axis=1)
-
-  return [i for i, score in enumerate(max_scores) if score >= threshold]
+  return [i for i, score in enumerate(scores) if score >= threshold]
 
 
 def fetch_article_content(url: str) -> tuple[str, str]:
@@ -346,22 +333,10 @@ def run_final_sbert(
 
   sbert_filter.load_anchors(anchors)
   texts = [a["full_text"] for a in articles]
-
-  import numpy as np
-
-  embeddings = sbert_filter.model.encode(
-    texts,
-    batch_size=32,
-    show_progress_bar=False,
-    convert_to_numpy=True,
-    normalize_embeddings=True,
-  )
-
-  scores = embeddings @ sbert_filter._anchor_matrix.T
-  max_scores = np.max(scores, axis=1)
+  scores = sbert_filter.score_texts(texts)
 
   confirmed = []
-  for i, score in enumerate(max_scores):
+  for i, score in enumerate(scores):
     if score >= threshold:
       articles[i]["sbert_score"] = float(score)
       confirmed.append(articles[i])
@@ -425,15 +400,12 @@ def write_to_db(confirmed_articles: list[dict]):
         date_str = article["article_date"]
         score = article["sbert_score"]
         extract = article["behavioral_extract"]
-        tone = article["tone_score"]
         search_terms = article["search_terms"]
 
         try:
           dt = datetime.datetime.strptime(date_str, "%Y%m%d%H%M%S")
         except Exception:
           dt = datetime.datetime.now()
-
-        trend_id = make_trend_id("news", url)
 
         for term in search_terms:
           cur.execute(
@@ -446,6 +418,7 @@ def write_to_db(confirmed_articles: list[dict]):
                 'news_match', %s,
                 %s, '["tiktok","instagram"]', 'pending', NOW()
               )
+              ON CONFLICT DO NOTHING
             """,
             (
               Json({
@@ -492,20 +465,7 @@ def main():
       print("[GDELT] Building proxy texts for Stage 6...")
       proxy_texts = build_proxy_texts(df_filtered)
 
-      with get_connection() as conn:
-        with conn.cursor() as cur:
-          # Include news_outcome anchors as requested
-          cur.execute(
-            """
-              SELECT anchor_text, embedding::text
-              FROM sbert_anchors
-              WHERE active = TRUE
-              AND source IN ('manual', 'news_outcome')
-            """
-          )
-          rows = cur.fetchall()
-
-      anchors = [(text, deserialize(emb_str)) for text, emb_str in rows]
+      anchors = fetch_active_anchors(['manual', 'news_outcome'])
       sbert_filter = SbertFilter()
 
       print("[GDELT] Running Stage 6 (Batch Proxy SBERT)...")
@@ -553,9 +513,10 @@ def main():
         print("[GDELT] Extracting search terms...")
         try:
           nlp = spacy.load("en_core_web_sm")
-        except OSError:
-          spacy.cli.download("en_core_web_sm")
-          nlp = spacy.load("en_core_web_sm")
+        except OSError as exc:
+          raise RuntimeError(
+            "The en_core_web_sm model must be installed in the runtime image."
+          ) from exc
 
         for art in confirmed_articles:
           art["search_terms"] = extract_search_terms(art, nlp)
