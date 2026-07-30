@@ -8,7 +8,7 @@ immediately and logs a ``circuit_open`` ToolError.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from duckduckgo_search import DDGS
 
@@ -27,9 +27,9 @@ def set_circuit_breaker(cb: DuckDuckGoCircuitBreaker) -> None:
   _circuit_breaker = cb
 
 
-@with_retry()
-def _raw_ddg_search(query: str, max_results: int = 5) -> list[dict]:
-  """Internal: call DDG and return raw result dicts."""
+@with_retry(empty_return=lambda: None)
+def _raw_ddg_search(query: str, max_results: int = 5) -> list[dict] | None:
+  """Internal: call DDG and return raw result dicts, or None if network/tool failure."""
   with DDGS() as ddgs:
     results = list(ddgs.text(query, max_results=max_results))
   return results
@@ -51,7 +51,7 @@ def duckduckgo_search(
         ToolError(
           tool="duckduckgo_search",
           error_type="circuit_open",
-          timestamp=datetime.now(timezone.utc).isoformat(),
+          timestamp=datetime.now(UTC).isoformat(),
           query=query,
         )
       )
@@ -59,8 +59,8 @@ def duckduckgo_search(
 
   raw = _raw_ddg_search(query, max_results)
 
-  if raw is None or (isinstance(raw, list) and len(raw) == 0):
-    # _raw_ddg_search returned [] after exhausting retries — record failure.
+  if raw is None:
+    # _raw_ddg_search returned None after exhausting retries due to error
     _circuit_breaker.record_failure()
     return []
 

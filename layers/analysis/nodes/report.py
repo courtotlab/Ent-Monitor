@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain_openai import ChatOpenAI
@@ -86,12 +86,22 @@ def report_node(state: AgentState) -> dict:
 
   platforms = list(set(p.get("platform", "unknown") for p in posts))
 
+  citations_used = state.get("citations_used_as_support", [])
+  supporting_evidence = [
+    e for e in evidence
+    if (e.get("title") in citations_used or e.get("pmid") in citations_used)
+    and not e.get("contradicts_harm")
+  ]
+  # fallback if LLM failed to populate citations_used_as_support but we have relevant evidence
+  if not supporting_evidence and evidence:
+    supporting_evidence = [e for e in evidence if e.get("is_relevant") and not e.get("contradicts_harm")]
+
   evidence_summary = (
     "\n".join(
       f"- [{e['source']}] {e['title']}"
       + (f" (PMID: {e['pmid']})" if e.get("pmid") else "")
       + f"\n  {e.get('snippet', '')[:150]}"
-      for e in evidence[:5]
+      for e in supporting_evidence[:5]
     )
     or "(no evidence)"
   )
@@ -146,7 +156,7 @@ def report_node(state: AgentState) -> dict:
   cluster_json = {
     "run_id": run_id,
     "cluster_id": cluster_id,
-    "processed_at": datetime.now(timezone.utc).isoformat(),
+    "processed_at": datetime.now(UTC).isoformat(),
     "classification": {
       "label": label,
       "confidence": confidence,
@@ -158,6 +168,7 @@ def report_node(state: AgentState) -> dict:
         and vf.get("citation_valid", True) is not False
         and vf.get("citation_relevant", True)
       ),
+      "verify_failure_reason": vf.get("notes", "") if vf and not (vf.get("citation_valid", True) is not False and vf.get("citation_relevant", True)) else "",
     },
     "trend": {
       "trend_name": report.get("trend_name", cluster_id),
@@ -172,8 +183,8 @@ def report_node(state: AgentState) -> dict:
         "platform": p.get("platform", ""),
         "caption_text": (p.get("caption_text") or "")[:200],
         "sbert_score": p.get("sbert_score", 0.0),
-        "likes": p.get("likes", 0),
-        "views": p.get("views", 0),
+        "likes": (p.get("engagement") or {}).get("likes", p.get("likes", 0)),
+        "views": (p.get("engagement") or {}).get("views", p.get("views", 0)),
       }
       for p in posts[:20]
     ],
@@ -203,7 +214,7 @@ def report_node(state: AgentState) -> dict:
     },
     "flags": {
       "needs_human_review": needs_human_review,
-      "rising_non_trend": False,
+      "rising_non_trend": False,  # TODO: §6 velocity monitoring integration
       "no_literature_found": no_evidence,
       "downgraded_from_harmful": downgraded,
       "tool_degraded": tool_degraded,

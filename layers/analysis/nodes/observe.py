@@ -23,12 +23,13 @@ from layers.analysis.state import AgentState
 logger = logging.getLogger(__name__)
 
 #  Tunable parameters (see §14 eval harness for validation plan)
-MIN_CLUSTER_SIZE = 2
-MIN_SAMPLES = 1
+MIN_CLUSTER_SIZE = 3
+MIN_SAMPLES = 2
 UMAP_N_COMPONENTS = 5
 UMAP_N_NEIGHBORS = 15
 UMAP_MIN_DIST = 0.0
 CENTROID_MARGIN = 0.08  # relocate if cosine(post, other) > cosine(post, own) + margin
+MERGE_SIMILARITY_THRESHOLD = 0.75  # merge clusters whose centroids exceed this cosine sim
 
 # SBERT model — same one used by SbertFilter in preprocess
 SBERT_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -67,6 +68,18 @@ def check_output_for_injection(text: str, cluster_id: str) -> bool:
   return False
 
 
+#  Engagement field helper — handles both nested (JSON file) and flat (DB) paths
+def _get_engagement(post: dict, field: str, default: int = 0) -> int:
+  """Read an engagement metric from either post['engagement'][field] or post[field]."""
+  eng = post.get("engagement")
+  if isinstance(eng, dict):
+    val = eng.get(field)
+    if val is not None:
+      return int(val)
+  # Fallback: flat key (e.g. from fetch_unprocessed_posts DB path)
+  return int(post.get(field, default))
+
+
 #  XML wrapping
 def _wrap_post_xml(post: dict, cluster_label: int | str, centroid_sim: float) -> str:
   """Wrap a single post in XML with metadata attributes."""
@@ -76,8 +89,8 @@ def _wrap_post_xml(post: dict, cluster_label: int | str, centroid_sim: float) ->
     "platform": post.get("platform", "unknown"),
     "sbert_score": f"{post.get('sbert_score', 0.0):.2f}",
     "creator": post.get("creator_id", "unknown"),
-    "likes": str(post.get("likes", 0)),
-    "views": str(post.get("views", 0)),
+    "likes": str(_get_engagement(post, "likes")),
+    "views": str(_get_engagement(post, "views")),
     "posted_at": post.get("posted_at", ""),
     "hdbscan_cluster": str(cluster_label),
     "centroid_sim": f"{centroid_sim:.2f}",
@@ -159,6 +172,8 @@ def _misclassification_check(
 
   Returns updated labels array (modifies in-place too).
   """
+  # HDBSCAN isn't perfect on the edges. If a post is technically inside Cluster A, 
+  # but its math vector is 8% closer to Cluster B, we manually yank it into Cluster B.
   if len(centroids) < 2:
     return labels
 
@@ -166,9 +181,6 @@ def _misclassification_check(
   centroid_matrix = np.array([centroids[c] for c in centroid_ids])
 
   for i in range(len(embeddings)):
-    if labels[i] == -1:
-      continue  # skip noise
-
     emb = embeddings[i]
     norm = np.linalg.norm(emb)
     if norm > 0:
@@ -178,7 +190,15 @@ def _misclassification_check(
 
     sims = centroid_matrix @ emb_normed  # cosine similarities
     own_idx = centroid_ids.index(labels[i]) if labels[i] in centroid_ids else -1
+    
     if own_idx < 0:
+      # It's a noise post. Let's see its similarity to the nearest centroid.
+      best_sim = np.max(sims)
+      best_idx = np.argmax(sims)
+      logger.info(
+        "NOISE POST %d: best sim to cluster %d is %.3f",
+        i, centroid_ids[best_idx], best_sim
+      )
       continue
 
     own_sim = sims[own_idx]
@@ -205,6 +225,72 @@ def _misclassification_check(
   return labels
 
 
+def _merge_similar_clusters(
+  embeddings: np.ndarray,
+  labels: np.ndarray,
+  centroids: dict[int, np.ndarray],
+  threshold: float = MERGE_SIMILARITY_THRESHOLD,
+) -> tuple[np.ndarray, dict[int, np.ndarray]]:
+  """Merge clusters whose centroids have cosine similarity > threshold.
+
+  Iteratively finds the most-similar pair above threshold, merges them
+  (reassigning all posts from the smaller cluster to the larger), and
+  recomputes centroids until no pair exceeds the threshold.
+  """
+  if len(centroids) < 2:
+    return labels, centroids
+
+  labels = labels.copy()
+  centroids = dict(centroids)  # mutable copy
+
+  merged = True
+  while merged:
+    merged = False
+    cluster_ids = sorted(centroids.keys())
+    if len(cluster_ids) < 2:
+      break
+
+    # Build similarity matrix
+    centroid_matrix = np.array([centroids[c] for c in cluster_ids])
+    sim_matrix = centroid_matrix @ centroid_matrix.T
+
+    # Zero out diagonal and lower triangle
+    np.fill_diagonal(sim_matrix, -1.0)
+    for r in range(len(cluster_ids)):
+      for c_idx in range(r):
+        sim_matrix[r, c_idx] = -1.0
+
+    best_idx = np.unravel_index(np.argmax(sim_matrix), sim_matrix.shape)
+    best_sim = sim_matrix[best_idx]
+
+    if best_sim >= threshold:
+      id_a = cluster_ids[best_idx[0]]
+      id_b = cluster_ids[best_idx[1]]
+
+      # Merge smaller into larger
+      count_a = int(np.sum(labels == id_a))
+      count_b = int(np.sum(labels == id_b))
+      keep, drop = (id_a, id_b) if count_a >= count_b else (id_b, id_a)
+
+      labels[labels == drop] = keep
+      del centroids[drop]
+      # Recompute the merged centroid
+      mask = labels == keep
+      new_centroid = embeddings[mask].mean(axis=0)
+      norm = np.linalg.norm(new_centroid)
+      if norm > 0:
+        new_centroid = new_centroid / norm
+      centroids[keep] = new_centroid
+
+      logger.info(
+        "Merged cluster %d into %d (sim=%.3f, new_size=%d)",
+        drop, keep, best_sim, int(np.sum(mask)),
+      )
+      merged = True
+
+  return labels, centroids
+
+
 #  LLM validation calls
 _SYSTEM_PROMPT = """\
 You are a clustering validation assistant for a pediatric ENT health trend \
@@ -227,6 +313,10 @@ These {n} posts were grouped together by embedding similarity.
 Questions:
 (a) Do ALL these posts describe the same ENT-relevant behavior? If not, which \
 post IDs should be split out?
+CRITICAL: Look out for "teaser", "reply", or "update" posts (e.g., "try this before \
+you go to urgent care", "results for the earache hack"). These usually belong to a \
+specific viral remedy trend. If they are lumped in with a cluster of generic \
+educational/clinical posts, they MUST be split out.
 (b) Name this cluster behaviorally (e.g., "cotton bud ear cleaning challenge", \
 "garlic in nose remedy"). Keep it short and specific.
 (c) Write a 1-2 sentence search_context that RESEARCH should use to find \
@@ -287,6 +377,8 @@ def observe_node(state: AgentState) -> dict:
 
   Returns a dict of state updates (clusters list ready for the outer loop).
   """
+  # This node NEVER lets the LLM cluster from scratch. We do the heavy lifting 
+  # with math (SBERT+HDBSCAN) first, and only use the LLM to validate the mathematical intent.
   posts = state.get("posts", [])
   print(f"\n[OBSERVE] Analyzing batch of {len(posts)} incoming posts...")
   if not posts:
@@ -306,6 +398,9 @@ def observe_node(state: AgentState) -> dict:
 
   # Recompute centroids after relocation
   centroids = _compute_centroids(embeddings, labels)
+
+  #  Step 3b: Merge similar clusters
+  labels, centroids = _merge_similar_clusters(embeddings, labels, centroids)
 
   #  Step 4: Group posts by cluster
   cluster_groups: dict[int, list[tuple[int, dict]]] = {}
@@ -359,8 +454,11 @@ def observe_node(state: AgentState) -> dict:
       if check_output_for_injection(result.get(field, ""), f"cluster_{lbl}"):
         result["triage_flag"] = "unclear"  # force human review downstream
 
-    # Handle splits — moved to noise
+    # Handle splits — moved to noise. If LLM unconfirms cluster without listing specific splits, reject all.
     split_ids = set(result.get("split_post_ids", []))
+    if not result.get("confirmed", True) and not split_ids:
+      split_ids = set(p.get("post_id") for _, p in members if p.get("post_id"))
+
     kept_posts = []
     for i, p in members:
       if p.get("post_id") in split_ids:
@@ -371,12 +469,12 @@ def observe_node(state: AgentState) -> dict:
     if kept_posts:
       cluster_entry = {
         "cluster_id": f"cluster_{lbl}",
-        "cluster_type": "behavioral",
+        "cluster_type": "behavioral",  # Metadata for dashboard grouping
         "posts": kept_posts,
         "search_context": result.get("search_context", ""),
         "triage_flag": result.get("triage_flag", "unclear"),
         "is_known_trend": check_if_trend_exists(result.get("cluster_name", f"cluster_{lbl}")),
-        "centroid": centroids.get(lbl, np.zeros(384)).tolist(),
+        "centroid": centroids.get(lbl, np.zeros(384)).tolist(),  # Stored for vector/similarity checks
         "cluster_name": result.get("cluster_name", f"cluster_{lbl}"),
       }
       validated_clusters.append(cluster_entry)

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import xml.etree.ElementTree as ET
-from typing import Optional
 
 import requests
 
@@ -94,7 +93,7 @@ def pubmed_search(query: str, max_results: int = 5) -> list[EvidenceItem]:
 
 
 @with_retry(empty_return=lambda: None)
-def pubmed_fetch_by_pmid(pmid: str) -> Optional[EvidenceItem]:
+def pubmed_fetch_by_pmid(pmid: str) -> EvidenceItem | None:
   """Fetch a single PubMed article by PMID.
 
   Returns:

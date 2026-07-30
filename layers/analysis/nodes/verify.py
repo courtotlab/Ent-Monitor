@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import requests
 from langchain_openai import ChatOpenAI
@@ -27,20 +27,23 @@ VERIFY_MODEL = "gpt-4.1"
 
 
 class VerifyResult(BaseModel):
-  citation_relevant: bool = Field(description="Does each cited paper actually support the specific claim made?")
+  citation_relevant: bool = Field(description="Does each cited paper actually support the specific claim made? Require topical, population, and context match — not just thematic overlap.")
   label_consistent: bool = Field(description="Does the overall evidence justify the label?")
+  reasoning_flags_gap: bool = Field(description="Does the classification reasoning text acknowledge a gap between the evidence and the claim (e.g., wrong population, wrong context, different age group)?")
   notes: str = Field(description="explanation if anything is wrong")
 
 
 def verify_node(state: AgentState) -> dict:
   """VERIFY node — checks citations, then LLM evaluates relevance + consistency."""
+  # This node's sole purpose is catching LLM hallucinations from CLASSIFY.
+  # We literally ping the NCBI database to ensure the PMIDs exist in the real world.
   print("  [VERIFY] Fact-checking LLM citations against databases...")
   citations = state.get("citations", [])
   evidence = state.get("evidence", [])
   label = state.get("label", "CONCERNING")
   tool_errors = list(state.get("tool_errors", []))
 
-  if not citations:
+  if not citations and not evidence:
     # Nothing to verify — pass through
     return {
       "verify_finding": VerifyFinding(
@@ -74,6 +77,8 @@ def verify_node(state: AgentState) -> dict:
         )
       except PMIDNotFoundError:
         # Confirmed hallucination — this IS a real signal
+        # The LLM completely hallucinated this PMID. We flag it as invalid, 
+        # which triggers the router to loop all the way back to RESEARCH to find a real paper.
         citation_checks.append(
           {
             "citation": cit,
@@ -93,7 +98,7 @@ def verify_node(state: AgentState) -> dict:
           ToolError(
             tool="pubmed_fetch_by_pmid",
             error_type="timeout",
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             query=pmid,
           )
         )
@@ -143,8 +148,6 @@ def verify_node(state: AgentState) -> dict:
         }
       )
 
-  #  Step 2: Batched LLM relevance + consistency check
-  # Only include citations that were actually checkable
   checkable = [
     c for c in citation_checks if c["valid"] is not None and not c["check_failed"]
   ]
@@ -154,7 +157,7 @@ def verify_node(state: AgentState) -> dict:
   label_consistent = True
   notes = ""
 
-  if checkable:
+  if checkable or evidence:
     try:
       llm = ChatOpenAI(
         model=VERIFY_MODEL,
@@ -176,9 +179,14 @@ def verify_node(state: AgentState) -> dict:
         for e in evidence[:10]
       )
 
+      harm_hypothesis = state.get("harm_hypothesis", "not specified")
+
       prompt = f"""\
 Current label: {label}
 Confidence: {state.get("confidence", 0.5)}
+Search context (the specific behavior being evaluated): {state.get("search_context", "unknown")}
+Harm hypothesis (the clinical mechanism the evidence should support): {harm_hypothesis}
+Classification reasoning: {state.get("reasoning", "")}
 
 Citations checked:
 {checks_summary}
@@ -186,16 +194,40 @@ Citations checked:
 All evidence:
 {evidence_summary}
 
-Evaluate citation relevance and label consistency based on the evidence.
+Evaluate with STRICT criteria — thematic overlap is NOT sufficient:
+
+1. citation_relevant: Does each cited paper SPECIFICALLY address:
+   (a) The EXACT population described in the post (e.g., pediatric vs. adult, \
+newborn vs. school-age, toddler vs. adolescent)?  A paper about newborn hearing \
+screening is NOT relevant to a school-age hearing screening post.
+   (b) The EXACT clinical mechanism stated in the harm hypothesis above?  A paper \
+about "sleep disturbance from atopic dermatitis" is NOT relevant to a "snoring from \
+adenotonsillar hypertrophy" post, even though both involve sleep.
+   (c) The specific behavior or exposure, not just the general topic area?
+   If ANY of (a), (b), or (c) fails, set citation_relevant = false.
+
+2. label_consistent: Given ONLY the truly relevant evidence (not thematically-adjacent \
+evidence), is the assigned label justified?
+
+3. reasoning_flags_gap: Read the classification reasoning text above.  Does it \
+acknowledge ANY mismatch between the evidence and the claim (e.g., "the evidence \
+is for newborn screening, not school screening" or "the cited study addresses a \
+different mechanism" or "evidence is from a different population")?  If so, set \
+this to true — this is a strong signal that the citation does not actually support \
+the classification.
 """
       result: VerifyResult = llm.invoke(prompt)
       citation_relevant = result.citation_relevant
       label_consistent = result.label_consistent
       notes = result.notes
+
+      if result.reasoning_flags_gap:
+        citation_relevant = False
+        notes = "CLASSIFY reasoning acknowledged evidence gap. " + notes
+        logger.info("VERIFY: reasoning_flags_gap=True - forcing citation_relevant=False")
     except Exception as exc:
       logger.warning("VERIFY LLM check failed: %s — assuming all valid", exc)
 
-  # If any citation was confirmed invalid, override
   if any(c["valid"] is False for c in citation_checks):
     citation_valid_overall = False
     invalid = [c for c in citation_checks if c["valid"] is False]

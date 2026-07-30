@@ -12,7 +12,7 @@ import functools
 import logging
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 

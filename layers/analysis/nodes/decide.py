@@ -27,10 +27,25 @@ def decide_node(state: AgentState) -> dict:
   vf = state.get("verify_finding")
 
   no_evidence = state.get("no_evidence_found", False)
+  label = state.get("label", "CONCERNING")
+  confidence = state.get("confidence", 0.0)
   downgraded = state.get("downgrade_reason") is not None and "HARMFUL" in (
     state.get("downgrade_reason") or ""
   )
-  needs_human_review = no_evidence or downgraded
+
+  verify_passed = (
+    vf is not None
+    and vf.get("citation_valid", True) is not False
+    and vf.get("citation_relevant", True)
+  )
+
+  needs_human_review = (
+    label in ("HARMFUL", "CONCERNING")
+    or downgraded
+    or (no_evidence and label == "SAFE" and confidence < 0.7)
+    or not verify_passed
+  )
+
   tool_degraded = bool(tool_errors) or (
     vf is not None and vf.get("citation_check_failed", False)
   )

@@ -6,6 +6,7 @@ Good for finding full DOI metadata for papers discovered via DuckDuckGo.
 from __future__ import annotations
 
 import logging
+import re
 
 import requests
 
@@ -47,8 +48,6 @@ def crossref_search(
 
     # CrossRef abstracts sometimes contain JATS XML tags — strip naively.
     if abstract:
-      import re
-
       abstract = re.sub(r"<[^>]+>", "", abstract)
 
     items.append(

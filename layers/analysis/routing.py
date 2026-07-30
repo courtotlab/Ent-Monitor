@@ -48,14 +48,23 @@ def compute_evidence_score(state: AgentState) -> float:
 
 #  Build the next evidence gap struct (§3 ASSESS)
 def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
-  """Decide what's missing and suggest a query + tool for RESEARCH."""
+  """Decide what's missing and suggest a query + tool for RESEARCH.
+
+  Uses harm_hypothesis (if available) instead of raw search_context to keep
+  retry queries in clinical/mechanism terminology rather than reverting to the
+  trend's colloquial vocabulary.
+  """
   evidence = state["evidence"]
   pubmed_count = sum(1 for e in evidence if e["source"] == "pubmed")
+
+  # Prefer harm_hypothesis for retry queries; fall back to search_context
+  hypothesis = state.get("harm_hypothesis", "") or ""
+  base_query = hypothesis if hypothesis and hypothesis != "none — benign content" else state["search_context"]
 
   if pubmed_count == 0:
     return EvidenceGap(
       missing="No peer-reviewed literature found yet",
-      suggested_query=f"{state['search_context']} pediatric harm mechanism",
+      suggested_query=f"{base_query} pediatric case report",
       suggested_tool="pubmed_search",
       reason="zero_pubmed_results",
     )
@@ -64,14 +73,14 @@ def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
   if relevant == 0:
     return EvidenceGap(
       missing="Found literature but none directly addresses this specific behavior",
-      suggested_query=f"{state['search_context']} case report OR adverse event",
+      suggested_query=f"{base_query} adverse event OR complications",
       suggested_tool="semantic_scholar_search",
       reason="low_relevance",
     )
 
   return EvidenceGap(
     missing="Insufficient evidence depth — trying news/social context",
-    suggested_query=f"{state['search_context']} TikTok trend danger",
+    suggested_query=f"{state['search_context']} danger warning pediatric",
     suggested_tool="duckduckgo_search",
     reason="thin_evidence",
   )
@@ -163,20 +172,18 @@ _DASHBOARD_RISK_THRESHOLD = 0.5
 
 #  Route: after DECIDE
 def route_after_decide(state: AgentState) -> Command:
-  """Route to REPORT only for clusters that should appear on the dashboard.
-
-  SAFE low-risk clusters skip REPORT entirely and loop straight back to
-  pop_cluster, saving the LLM call.
-  """
+  """Edges (5) (6) — DECIDE gates the expensive REPORT node."""
   label = state.get("label", "CONCERNING")
   risk_score = state.get("risk_score", 0.0)
   no_evidence = state.get("no_evidence_found", False)
+  downgrade = state.get("downgrade_reason")
 
-  if (
-    label in _DASHBOARD_LABELS
-    or risk_score >= _DASHBOARD_RISK_THRESHOLD
-    or no_evidence
-  ):
-    return Command(goto="report")
+  # Cost-saving bypass for benign content
+  # DISABLED PER USER REQUEST: generate JSON for ALL clusters
+  # if label == "SAFE" and not no_evidence and not downgrade:
+  #   return Command(goto="pop_cluster")
 
-  return Command(goto="pop_cluster")
+  # if label in _DASHBOARD_LABELS or risk_score >= _DASHBOARD_RISK_THRESHOLD:
+  #   return Command(goto="report")
+
+  return Command(goto="report")

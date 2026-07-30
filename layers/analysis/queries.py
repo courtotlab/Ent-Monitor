@@ -1,9 +1,9 @@
 import logging
 
 from psycopg2.extras import Json
-from layers.shared.trend_utils import make_trend_id
 
 from layers.shared.db import get_connection
+from layers.shared.trend_utils import make_trend_id
 
 logger = logging.getLogger(__name__)
 
@@ -11,10 +11,13 @@ logger = logging.getLogger(__name__)
 def check_if_trend_exists(trend_name: str) -> bool:
   """Check if a trend with this exact derived ID already exists in the database."""
   trend_id = make_trend_id(trend_name)
-  with get_connection() as conn:
-    with conn.cursor() as cur:
+  try:
+    with get_connection() as conn, conn.cursor() as cur:
       cur.execute("SELECT 1 FROM active_trends WHERE trend_id = %s", (trend_id,))
       return cur.fetchone() is not None
+  except Exception as exc:
+    logger.warning("Database unavailable (%s) — defaulting is_known_trend to False", exc)
+    return False
 
 
 def fetch_unprocessed_posts(threshold: float = 0.38) -> list[dict]:
@@ -51,7 +54,11 @@ def fetch_unprocessed_posts(threshold: float = 0.38) -> list[dict]:
 
 
 def write_cluster_to_db(cluster_json: dict) -> None:
-  """Persist the cluster classification into the database."""
+  """Persist the cluster classification into active_trends and posts tables.
+  
+  TODO: Wire this into report_node or orchestrator post-processing once live
+  database persistence for Layer 3 outputs is active.
+  """
   trend_name = cluster_json.get("trend", {}).get("trend_name", "unknown_trend")
   trend_id = make_trend_id(trend_name)
 
