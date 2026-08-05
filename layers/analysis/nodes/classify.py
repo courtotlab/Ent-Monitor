@@ -1,4 +1,4 @@
-"""CLASSIFY node — single-shot, high-effort classification.
+"""CLASSIFY node — single-shot, medium-effort classification.
 
 One Terra call per entry.  No internal self-loop.  Produces label, citations,
 reasoning, confidence, needs_more_evidence, and evidence_gap.  Hard rules
@@ -11,6 +11,7 @@ import logging
 import os
 from typing import Literal
 
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
@@ -102,7 +103,7 @@ def classify_node(state: AgentState) -> dict:
       rel = "relevant" if e.get("is_relevant") else "not relevant"
       contra = " [CONTRADICTS harm]" if e.get("contradicts_harm") else ""
       lines.append(
-        f"[{i}] [{e['source']}] {e['title']}\n"
+        f"[{i}] [{e.get('source', 'unknown')}] {e.get('title', 'Untitled')}\n"
         f"    {rel}{contra}\n"
         f"    {e.get('snippet', '')[:150]}"
       )
@@ -134,9 +135,13 @@ def classify_node(state: AgentState) -> dict:
       model=CLASSIFY_MODEL,
       api_key=os.getenv("OPENAI_API_KEY"),
       reasoning_effort=CLASSIFY_REASONING_EFFORT,
+      # TODO(spec-owner): gpt-5.6-terra is a reasoning model, check if temperature=0 is ignored/rejected by API
       temperature=0,
     ).with_structured_output(ClassificationResult)
-    result_obj: ClassificationResult = llm.invoke(_SYSTEM_PROMPT + "\n\n" + prompt)
+    result_obj: ClassificationResult = llm.invoke([
+      SystemMessage(content=_SYSTEM_PROMPT),
+      HumanMessage(content=prompt)
+    ])
     
     label = result_obj.label
     confidence = result_obj.confidence
@@ -149,20 +154,21 @@ def classify_node(state: AgentState) -> dict:
   except Exception as exc:
     logger.error("CLASSIFY LLM failed: %s — defaulting to CONCERNING", exc)
     label = "CONCERNING"
-    confidence = 0.3
+    confidence = 0.0  # distinct from Rule 2's 0.3 to indicate catastrophic failure
     citations = []
     citations_used_as_support = []
-    reasoning = f"Classification failed: {exc}"
+    reasoning = "Classification failed due to internal error."
     needs_more_evidence = False
     evidence_gap = None
 
-  downgrade_reason = state.get("downgrade_reason")
+  # Reset downgrade_reason per invocation
+  downgrade_reason = None
 
   #  Hard rules (enforced in code, not by LLM)
   # Rule 1 overrides the LLM if it flags something as HARMFUL but hallucinated/failed 
   # to provide an actual PubMed citation to prove it.
-  # Rule 1: HARMFUL requires at least 1 PubMed citation
-  if label == "HARMFUL" and not any(c.get("source") == "pubmed" for c in citations):
+  # Rule 1: HARMFUL requires at least 1 PubMed citation with a valid PMID
+  if label == "HARMFUL" and not any(c.get("source") == "pubmed" and c.get("pmid") for c in citations):
     label = "CONCERNING"
     confidence = min(confidence, 0.5)
     downgrade_reason = "HARMFUL requires PubMed citation, none found"
@@ -181,6 +187,7 @@ def classify_node(state: AgentState) -> dict:
       # Zero evidence on an anatomy explainer video just means it's boring, not dangerous.
       if label != "SAFE":
         label = "SAFE"
+        # Note: overrides LLM confidence with placeholder 0.5 (inconsistent with keeping LLM's confidence if it already said SAFE)
         confidence = 0.5
         downgrade_reason = "No evidence needed — triage_flag was likely_safe (benign/educational content)"
     else:
@@ -188,12 +195,17 @@ def classify_node(state: AgentState) -> dict:
       label = "CONCERNING"
       confidence = 0.3
       if len(evidence) == 0:
-        downgrade_reason = "No evidence found after exhausting research retries"
+        if state.get("research_retries_left", 0) <= 0:
+          downgrade_reason = "No evidence found [research retries exhausted]"
+        else:
+          downgrade_reason = "No evidence found on this pass"
+      else:
+        downgrade_reason = "Evidence found but was incomplete/contradictory (no_evidence_found flag set)"
 
   # Rule 3: Override needs_more_evidence if retries exhausted
   if needs_more_evidence and state.get("research_retries_left", 0) <= 0:
     needs_more_evidence = False
-    if "research retries exhausted" not in (downgrade_reason or ""):
+    if "research retries" not in (downgrade_reason or ""):
       downgrade_reason = (f"{downgrade_reason} " if downgrade_reason else "") + "[research retries exhausted]"
 
   #  Risk score (§4 formula — label-aware confidence)
@@ -202,8 +214,10 @@ def classify_node(state: AgentState) -> dict:
   contradiction_ratio = 0.0
   if evidence:
     contradictions = sum(1 for e in evidence if e.get("contradicts_harm"))
-    if contradictions > 0:
-      contradiction_ratio = min(contradictions / len(evidence), 1.0)
+    contradiction_ratio = min(contradictions / len(evidence), 1.0)
+    
+  # Note: DuckDuckGo is used here as a proxy for "real-world reports of harm" 
+  # (as opposed to academic sources confirming mechanisms).
   harm_reports = any(
     e.get("source") == "duckduckgo" and e.get("is_relevant") for e in evidence
   )
@@ -213,6 +227,8 @@ def classify_node(state: AgentState) -> dict:
   # We calculate the final risk score mathematically. No LLM vibes allowed here.
   confidence_of_harm = confidence if label in ("HARMFUL", "CONCERNING") else (1.0 - confidence)
 
+  # TODO(spec-owner): §4 risk score weights currently sum to 0.90 (0.40+0.25+0.15+0.10).
+  # The clamp below to 1.0 is unreachable. Confirm if intentional or if weights need adjusting.
   risk_score = (
     0.40 * confidence_of_harm
     + 0.25 * min(post_count / 100, 1.0)
@@ -222,9 +238,20 @@ def classify_node(state: AgentState) -> dict:
   )
   risk_score = max(0.0, min(risk_score, 1.0))
 
-  #  Injection check on reasoning
-  if check_output_for_injection(reasoning, cluster_id):
+  #  Injection check on reasoning and all LLM-generated free text
+  # Note: This intentionally only prevents runaway tool use (by clearing gap/needs_more_evidence)
+  # rather than modifying the label/confidence itself.
+  llm_text = reasoning
+  for c in citations:
+      llm_text += " " + c.get("relevance_note", "")
+  if evidence_gap:
+      llm_text += " " + evidence_gap.get("reason", "")
+      llm_text += " " + evidence_gap.get("missing", "")
+      llm_text += " " + evidence_gap.get("suggested_query", "")
+
+  if check_output_for_injection(llm_text, cluster_id):
     needs_more_evidence = False  # don't trust gap either
+    evidence_gap = None
 
   logger.info(
     "CLASSIFY: %s label=%s confidence=%.2f risk=%.3f needs_more=%s",
@@ -243,6 +270,6 @@ def classify_node(state: AgentState) -> dict:
     "risk_score": risk_score,
     "reasoning": reasoning,
     "needs_more_evidence": needs_more_evidence,
-    "evidence_gap": evidence_gap if needs_more_evidence else None,
+    "evidence_gap": evidence_gap,
     "downgrade_reason": downgrade_reason,
   }

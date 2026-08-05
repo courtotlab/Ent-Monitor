@@ -1,8 +1,12 @@
 """DuckDuckGo search tool — free, no API key.
 
-Uses the ``duckduckgo-search`` Python package.  Checks the run-level
-circuit breaker before every call; if the breaker is open, returns []
-immediately and logs a ``circuit_open`` ToolError.
+Uses the ``ddgs`` Python package.  Checks the circuit breaker before every call;
+if the breaker is open, returns [] immediately and logs a ``circuit_open`` ToolError.
+
+WARNING: _circuit_breaker is a module-global. The orchestrator is assumed to
+process runs sequentially in a single-threaded process. Concurrent runs (e.g. via
+async workers or multi-threading) will share this global state, causing race
+conditions or cross-run tripping unless this is refactored.
 """
 
 from __future__ import annotations
@@ -10,7 +14,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 from layers.analysis.state import EvidenceItem, ToolError
 from layers.analysis.tools.retry import DuckDuckGoCircuitBreaker, with_retry
@@ -18,11 +22,12 @@ from layers.analysis.tools.retry import DuckDuckGoCircuitBreaker, with_retry
 logger = logging.getLogger(__name__)
 
 # Module-level default — overridden by the orchestrator per run.
+# Assumes sequential single-threaded execution.
 _circuit_breaker = DuckDuckGoCircuitBreaker()
 
 
 def set_circuit_breaker(cb: DuckDuckGoCircuitBreaker) -> None:
-  """Inject a run-scoped circuit breaker instance."""
+  """Inject a run-scoped circuit breaker instance (assumes single-threaded execution)."""
   global _circuit_breaker
   _circuit_breaker = cb
 

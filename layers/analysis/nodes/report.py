@@ -18,6 +18,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from layers.analysis.state import AgentState
+from layers.shared.posts import get_engagement
 
 logger = logging.getLogger(__name__)
 
@@ -149,8 +150,13 @@ def report_node(state: AgentState) -> dict:
   no_evidence = state.get("no_evidence_found", False)
   needs_human_review = state.get("needs_human_review", False)
   tool_degraded = state.get("tool_degraded", False)
-  downgraded = state.get("downgrade_reason") is not None and "HARMFUL" in (
-    state.get("downgrade_reason") or ""
+  downgraded = "HARMFUL" in (state.get("downgrade_reason") or "")
+
+  # Note: explicit None for citation_valid (e.g., tool error) is treated as a pass
+  verify_passed = (
+    vf is not None
+    and vf.get("citation_valid", True) is not False
+    and vf.get("citation_relevant", True)
   )
 
   cluster_json = {
@@ -163,12 +169,8 @@ def report_node(state: AgentState) -> dict:
       "risk_score": risk_score,
       "evidence_status": evidence_status,
       "no_evidence_found": no_evidence,
-      "verify_passed": (
-        vf is not None
-        and vf.get("citation_valid", True) is not False
-        and vf.get("citation_relevant", True)
-      ),
-      "verify_failure_reason": vf.get("notes", "") if vf and not (vf.get("citation_valid", True) is not False and vf.get("citation_relevant", True)) else "",
+      "verify_passed": verify_passed,
+      "verify_failure_reason": vf.get("notes", "") if vf and not verify_passed else "",
     },
     "trend": {
       "trend_name": report.get("trend_name", cluster_id),
@@ -183,8 +185,8 @@ def report_node(state: AgentState) -> dict:
         "platform": p.get("platform", ""),
         "caption_text": (p.get("caption_text") or "")[:200],
         "sbert_score": p.get("sbert_score", 0.0),
-        "likes": (p.get("engagement") or {}).get("likes", p.get("likes", 0)),
-        "views": (p.get("engagement") or {}).get("views", p.get("views", 0)),
+        "likes": get_engagement(p, "likes"),
+        "views": get_engagement(p, "views"),
       }
       for p in posts[:20]
     ],
@@ -214,7 +216,7 @@ def report_node(state: AgentState) -> dict:
     },
     "flags": {
       "needs_human_review": needs_human_review,
-      "rising_non_trend": False,  # TODO: §6 velocity monitoring integration
+      "rising_non_trend": False,  # RESERVED UNUSED FIELD - TODO: §6 velocity monitoring integration
       "no_literature_found": no_evidence,
       "downgraded_from_harmful": downgraded,
       "tool_degraded": tool_degraded,

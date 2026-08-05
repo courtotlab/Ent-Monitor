@@ -82,7 +82,7 @@ class ResearchQuery(BaseModel):
   reasoning: str = Field(description="brief explanation of why this tool and query")
 
 class ResearchDecision(BaseModel):
-  queries: list[ResearchQuery] = Field(description="List of queries. Provide one for EACH plausible harm mechanism (up to 2-3).")
+  queries: list[ResearchQuery] = Field(description="List of queries. Provide one for EACH plausible harm mechanism (up to 2).")
 
 
 class RelevanceTag(BaseModel):
@@ -115,7 +115,7 @@ def research_node(state: AgentState) -> dict:
   if evidence_gap and evidence_gap.get("suggested_query"):
     tool_name = evidence_gap.get("suggested_tool", "pubmed_search")
     query = evidence_gap["suggested_query"]
-    if query in prior_queries:
+    while query in prior_queries:
       query = query + " children"  # simple dedup suffix
     queries_to_run.append({"tool_name": tool_name, "query": query, "harm_hypothesis": harm_hypothesis})
   else:
@@ -139,7 +139,7 @@ def research_node(state: AgentState) -> dict:
         queries_to_run.append({"tool_name": rq.tool, "query": rq.query, "harm_hypothesis": rq.harm_hypothesis})
       # Capture harm_hypothesis on first pass
       if not harm_hypothesis and result.queries:
-        harm_hypothesis = " ; ".join(set(rq.harm_hypothesis for rq in result.queries))
+        harm_hypothesis = " ; ".join(dict.fromkeys(rq.harm_hypothesis for rq in result.queries))
     except Exception as exc:
       logger.warning("RESEARCH LLM failed: %s - falling back to pubmed_search", exc)
       queries_to_run.append({"tool_name": "pubmed_search", "query": f"{search_context} pediatric ENT harm mechanism", "harm_hypothesis": ""})
@@ -196,9 +196,20 @@ def research_node(state: AgentState) -> dict:
     results = _tag_relevance(results, search_context, harm_hypothesis)
     results = [r for r in results if r.get("is_relevant")]
 
-  # Capping at 3 saves massive token costs downstream and prevents LLM context confusion.
-  new_evidence = existing_evidence + results
-  new_evidence = new_evidence[:3]
+  # Dedup by PMID (or title if no PMID) and cap to prevent LLM context confusion.
+  seen = set()
+  unique_evidence = []
+  for item in existing_evidence + results:
+    key = item.get("pmid") or item.get("title", "").strip().lower()
+    if key and key not in seen:
+      seen.add(key)
+      unique_evidence.append(item)
+    elif not key:
+      unique_evidence.append(item)
+
+  # Capping saves massive token costs downstream. Cap at 3 for first pass, 5 for loop-backs.
+  cap = 5 if evidence_gap else 3
+  new_evidence = unique_evidence[:cap]
 
   return {
     "evidence": new_evidence,
@@ -230,11 +241,12 @@ def _tag_relevance(
     ).with_structured_output(RelevanceTags)
 
     evidence_summary = "\n".join(
-      f"[{i}] {item['title']}: {item['snippet'][:150]}" for i, item in enumerate(items)
+      f"[{i}] {item['title']}\n    Source: {item['source']}\n    {item['snippet'][:800]}"
+      for i, item in enumerate(items)
     )
 
     hypothesis_block = ""
-    if harm_hypothesis and harm_hypothesis != "none - benign content" and harm_hypothesis != "none — benign content":
+    if harm_hypothesis and not harm_hypothesis.strip().lower().startswith("none"):
       hypothesis_block = f"""\nHarm hypothesis (the clinical mechanism being investigated): {harm_hypothesis}
 
 CRITICAL: An evidence item is ONLY relevant if it directly addresses the harm \

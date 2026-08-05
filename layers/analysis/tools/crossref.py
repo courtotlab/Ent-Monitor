@@ -56,7 +56,7 @@ def crossref_search(
         title=title,
         url=f"https://doi.org/{doi}" if doi else "",
         pmid=None,
-        snippet=abstract[:300],
+        snippet=abstract[:1200],
         is_relevant=False,
         contradicts_harm=False,
       )

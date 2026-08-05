@@ -138,6 +138,7 @@ def verify_node(state: AgentState) -> dict:
         )
         any_check_failed = True
     else:
+      logger.warning("VERIFY: Citation malformed (no pmid or url) — treating as check failed: %s", cit.get("title", "Unknown"))
       citation_checks.append(
         {
           "citation": cit,
@@ -169,7 +170,7 @@ def verify_node(state: AgentState) -> dict:
         f'- [{c["citation"].get("source", "?")}] "{c["citation"].get("title", "?")}"\n'
         f"  PMID: {c['citation'].get('pmid', 'n/a')} | Valid: {c['valid']}\n"
         f"  Fetched title: {c['fetched_title']}\n"
-        f"  Fetched snippet: {c['fetched_snippet'][:150]}\n"
+        f"  Fetched snippet: {c['fetched_snippet'][:800]}\n"
         f"  Claim: {c['citation'].get('relevance_note', 'n/a')}"
         for c in checkable
       )
@@ -226,6 +227,8 @@ the classification.
         notes = "CLASSIFY reasoning acknowledged evidence gap. " + notes
         logger.info("VERIFY: reasoning_flags_gap=True - forcing citation_relevant=False")
     except Exception as exc:
+      # Note: Failing open here is intentional. If the LLM check crashes, we assume citations are valid
+      # and let downstream human review catch the tool_degraded flag, rather than blindly failing the cluster.
       logger.warning("VERIFY LLM check failed: %s — assuming all valid", exc)
 
   if any(c["valid"] is False for c in citation_checks):
@@ -238,6 +241,8 @@ the classification.
     citation_valid=citation_valid_overall,
     citation_relevant=citation_relevant,
     label_consistent=label_consistent,
+    # We only flag check_failed downstream if the overall citation_valid is still True.
+    # If it's already False (e.g. hallucinated PMID), the check failure is moot.
     citation_check_failed=any_check_failed and citation_valid_overall,
     notes=notes,
   )

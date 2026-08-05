@@ -49,7 +49,7 @@ def _is_english(text: str) -> bool:
 
 
 def run_quality_filter(posts: list[dict[str, Any]]) -> QualityFilterResult:
-  """Quality filter — dedup (in-batch), spam/bot flag, language, minimum content."""
+  """Quality filter - dedup (in-batch), spam/bot flag, language, minimum content."""
   stats = QualityFilterStats()
   seen: set[tuple[str, str]] = set()
   survivors: list[dict[str, Any]] = []

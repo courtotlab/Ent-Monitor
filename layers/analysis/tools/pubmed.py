@@ -35,11 +35,18 @@ def _parse_articles(xml_text: str) -> list[EvidenceItem]:
   for article in root.findall(".//PubmedArticle"):
     pmid_el = article.find(".//PMID")
     title_el = article.find(".//ArticleTitle")
-    abstract_el = article.find(".//AbstractText")
 
     pmid = pmid_el.text if pmid_el is not None else None
     title = title_el.text if title_el is not None else "Untitled"
-    abstract = abstract_el.text if abstract_el is not None else ""
+
+    abstract_parts = []
+    for el in article.findall(".//AbstractText"):
+      text = "".join(el.itertext()).strip()
+      if not text:
+        continue
+      label = el.get("Label")
+      abstract_parts.append(f"{label}: {text}" if label else text)
+    abstract = " ".join(abstract_parts)
 
     items.append(
       EvidenceItem(
@@ -47,7 +54,7 @@ def _parse_articles(xml_text: str) -> list[EvidenceItem]:
         title=title or "Untitled",
         url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
         pmid=pmid,
-        snippet=(abstract or "")[:300],
+        snippet=(abstract or "")[:1200],
         is_relevant=False,  # tagged by RESEARCH LLM later
         contradicts_harm=False,
       )

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, Literal
 
 import hdbscan
 import numpy as np
@@ -19,6 +19,7 @@ from sentence_transformers import SentenceTransformer
 
 from layers.analysis.queries import check_if_trend_exists
 from layers.analysis.state import AgentState
+from layers.shared.posts import get_engagement
 
 logger = logging.getLogger(__name__)
 
@@ -60,24 +61,12 @@ INJECTION_PATTERNS = [
 
 
 def check_output_for_injection(text: str, cluster_id: str) -> bool:
-  """Returns True if output looks like it was influenced by injection."""
+  """Best-effort heuristic to catch lazy injections. Real defense is XML-escaping + system-prompt."""
   lower = text.lower()
   if any(p in lower for p in INJECTION_PATTERNS):
     logger.warning("[SECURITY] Possible injection in output for %s", cluster_id)
     return True
   return False
-
-
-#  Engagement field helper — handles both nested (JSON file) and flat (DB) paths
-def _get_engagement(post: dict, field: str, default: int = 0) -> int:
-  """Read an engagement metric from either post['engagement'][field] or post[field]."""
-  eng = post.get("engagement")
-  if isinstance(eng, dict):
-    val = eng.get(field)
-    if val is not None:
-      return int(val)
-  # Fallback: flat key (e.g. from fetch_unprocessed_posts DB path)
-  return int(post.get(field, default))
 
 
 #  XML wrapping
@@ -89,8 +78,8 @@ def _wrap_post_xml(post: dict, cluster_label: int | str, centroid_sim: float) ->
     "platform": post.get("platform", "unknown"),
     "sbert_score": f"{post.get('sbert_score', 0.0):.2f}",
     "creator": post.get("creator_id", "unknown"),
-    "likes": str(_get_engagement(post, "likes")),
-    "views": str(_get_engagement(post, "views")),
+    "likes": str(get_engagement(post, "likes")),
+    "views": str(get_engagement(post, "views")),
     "posted_at": post.get("posted_at", ""),
     "hdbscan_cluster": str(cluster_label),
     "centroid_sim": f"{centroid_sim:.2f}",
@@ -179,6 +168,7 @@ def _misclassification_check(
 
   centroid_ids = sorted(centroids.keys())
   centroid_matrix = np.array([centroids[c] for c in centroid_ids])
+  centroid_idx_map = {lbl: idx for idx, lbl in enumerate(centroid_ids)}
 
   for i in range(len(embeddings)):
     emb = embeddings[i]
@@ -189,16 +179,10 @@ def _misclassification_check(
       continue
 
     sims = centroid_matrix @ emb_normed  # cosine similarities
-    own_idx = centroid_ids.index(labels[i]) if labels[i] in centroid_ids else -1
+    own_idx = centroid_idx_map.get(labels[i], -1)
     
     if own_idx < 0:
-      # It's a noise post. Let's see its similarity to the nearest centroid.
-      best_sim = np.max(sims)
-      best_idx = np.argmax(sims)
-      logger.info(
-        "NOISE POST %d: best sim to cluster %d is %.3f",
-        i, centroid_ids[best_idx], best_sim
-      )
+      # It's a noise post.
       continue
 
     own_sim = sims[own_idx]
@@ -343,23 +327,107 @@ class ClusterValidation(BaseModel):
   confirmed: bool
   cluster_name: str
   search_context: str
-  triage_flag: str = Field(description="One of: likely_harmful, unclear, likely_safe")
+  triage_flag: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="One of: likely_harmful, unclear, likely_safe")
   split_post_ids: list[str]
 
 class Attachment(BaseModel):
   post_id: str
-  attach_to_cluster: str
+  attach_to_cluster: str = Field(description="The cluster_id to attach to")
 
 class NewGroup(BaseModel):
   cluster_name: str
   search_context: str
-  triage_flag: str = Field(description="One of: likely_harmful, unclear, likely_safe")
+  triage_flag: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="One of: likely_harmful, unclear, likely_safe")
   post_ids: list[str]
 
 class UnclassifiedValidation(BaseModel):
   attach: list[Attachment]
   new_groups: list[NewGroup]
   still_unclassified: list[str]
+
+_SEMANTIC_MERGE_PROMPT = """\
+Review the following clusters generated from social media posts.
+
+Clusters:
+{clusters_summary}
+
+Question:
+Do any of these clusters describe the EXACT same underlying behavior or trend (e.g. "flashlight tonsil check" vs "checking tonsils with phone light")?
+If so, list the groups of cluster IDs that should be merged into a single unified cluster.
+"""
+
+class MergeGroup(BaseModel):
+  cluster_ids: list[str] = Field(description="List of cluster IDs to merge together")
+  merged_name: str = Field(description="The best behavioral name for this merged group")
+  merged_context: str = Field(description="The best search_context for this merged group")
+  merged_triage: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="The most conservative/risky triage_flag among the merged clusters")
+
+class SemanticMergeDecision(BaseModel):
+  merges: list[MergeGroup]
+
+def _semantic_merge_clusters(validated_clusters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  """LLM pass to merge clusters that share behavioral semantics despite SBERT distance."""
+  if len(validated_clusters) < 2:
+    return validated_clusters
+
+  # Exclude UNCLASSIFIED from merging
+  mergeable = [c for c in validated_clusters if c["cluster_id"] != "UNCLASSIFIED"]
+  if len(mergeable) < 2:
+    return validated_clusters
+
+  clusters_summary = "\n".join(
+    f"- ID: {c['cluster_id']} | Name: {c['cluster_name']} | Context: {c['search_context']}"
+    for c in mergeable
+  )
+
+  prompt = _SYSTEM_PROMPT + "\n\n" + _SEMANTIC_MERGE_PROMPT.format(clusters_summary=clusters_summary)
+  
+  try:
+    llm = ChatOpenAI(
+      model=OBSERVE_MODEL,
+      api_key=os.getenv("OPENAI_API_KEY"),
+      temperature=0,
+    ).with_structured_output(SemanticMergeDecision)
+    result_obj: SemanticMergeDecision = llm.invoke(prompt)
+    merges = result_obj.merges
+  except Exception as exc:
+    logger.warning("Semantic merge LLM failed: %s — skipping semantic merge", exc)
+    return validated_clusters
+
+  cluster_dict = {c["cluster_id"]: c for c in validated_clusters}
+  merged_ids = set()
+  final_clusters = []
+
+  for mg in merges:
+    ids_to_merge = [cid for cid in mg.cluster_ids if cid in cluster_dict]
+    if len(ids_to_merge) < 2:
+      continue
+
+    combined_posts = []
+    for cid in ids_to_merge:
+      combined_posts.extend(cluster_dict[cid]["posts"])
+      merged_ids.add(cid)
+
+    new_id = ids_to_merge[0]
+
+    merged_cluster = {
+      "cluster_id": new_id,
+      "cluster_type": "behavioral",
+      "posts": combined_posts,
+      "search_context": mg.merged_context,
+      "triage_flag": mg.merged_triage,
+      "is_known_trend": check_if_trend_exists(mg.merged_name),
+      "centroid": cluster_dict[new_id]["centroid"],
+      "cluster_name": mg.merged_name,
+    }
+    final_clusters.append(merged_cluster)
+    logger.info("Semantic merge: combined %s into %s", ids_to_merge, new_id)
+
+  for c in validated_clusters:
+    if c["cluster_id"] not in merged_ids:
+      final_clusters.append(c)
+
+  return final_clusters
 
 def _validate_clusters(prompt: str, schema) -> Any:
   """Call gpt-4.1-mini to validate the math-based clusters using structured output."""
@@ -382,7 +450,7 @@ def observe_node(state: AgentState) -> dict:
   posts = state.get("posts", [])
   print(f"\n[OBSERVE] Analyzing batch of {len(posts)} incoming posts...")
   if not posts:
-    return {"posts": [], "search_context": "", "triage_flag": "likely_safe"}
+    return {"clusters_queue": [], "cluster_results": []}
 
   #  Step 1: Embed + UMAP + HDBSCAN
   sbert_model = SentenceTransformer(SBERT_MODEL_NAME)
@@ -474,14 +542,14 @@ def observe_node(state: AgentState) -> dict:
         "search_context": result.get("search_context", ""),
         "triage_flag": result.get("triage_flag", "unclear"),
         "is_known_trend": check_if_trend_exists(result.get("cluster_name", f"cluster_{lbl}")),
-        "centroid": centroids.get(lbl, np.zeros(384)).tolist(),  # Stored for vector/similarity checks
+        "centroid": centroids.get(lbl, np.zeros(sbert_model.get_sentence_embedding_dimension())).tolist(),  # Stored for vector/similarity checks
         "cluster_name": result.get("cluster_name", f"cluster_{lbl}"),
       }
       validated_clusters.append(cluster_entry)
 
   #  Step 7: LLM call for noise/unclassified pool
   if noise_posts:
-    cluster_names = [c["cluster_name"] for c in validated_clusters]
+    cluster_names = [f"{c['cluster_id']}: {c['cluster_name']}" for c in validated_clusters]
     posts_xml = "\n".join(
       _wrap_post_xml(p, "UNCLASSIFIED", _centroid_sim(i, -1)) for i, p in noise_posts
     )
@@ -506,11 +574,11 @@ def observe_node(state: AgentState) -> dict:
 
     # Attach explicitly matched noise posts before creating new/noise groups.
     noise_by_id = {post.get("post_id"): post for _, post in noise_posts}
-    clusters_by_name = {cluster["cluster_name"]: cluster for cluster in validated_clusters}
+    clusters_by_id = {cluster["cluster_id"]: cluster for cluster in validated_clusters}
     attached_ids = set()
     for attachment in unc_result.get("attach", []):
       post_id = attachment.get("post_id")
-      target = clusters_by_name.get(attachment.get("attach_to_cluster"))
+      target = clusters_by_id.get(attachment.get("attach_to_cluster"))
       post = noise_by_id.get(post_id)
       if target and post:
         target["posts"].append(post)
@@ -562,10 +630,17 @@ def observe_node(state: AgentState) -> dict:
       )
 
   logger.info(
-    "OBSERVE: %d posts → %d clusters (%d noise posts)",
+    "OBSERVE (pre-merge): %d posts → %d clusters (%d noise posts)",
     len(posts),
     len(validated_clusters),
     len(noise_posts),
+  )
+
+  validated_clusters = _semantic_merge_clusters(validated_clusters)
+
+  logger.info(
+    "OBSERVE (post-merge): final count %d clusters",
+    len(validated_clusters)
   )
 
   # The outer orchestrator iterates validated_clusters and invokes the

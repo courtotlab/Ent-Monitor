@@ -174,16 +174,10 @@ _DASHBOARD_RISK_THRESHOLD = 0.5
 def route_after_decide(state: AgentState) -> Command:
   """Edges (5) (6) — DECIDE gates the expensive REPORT node."""
   label = state.get("label", "CONCERNING")
-  risk_score = state.get("risk_score", 0.0)
-  no_evidence = state.get("no_evidence_found", False)
-  downgrade = state.get("downgrade_reason")
+  needs_human_review = state.get("needs_human_review", False)
 
   # Cost-saving bypass for benign content
-  # DISABLED PER USER REQUEST: generate JSON for ALL clusters
-  # if label == "SAFE" and not no_evidence and not downgrade:
-  #   return Command(goto="pop_cluster")
-
-  # if label in _DASHBOARD_LABELS or risk_score >= _DASHBOARD_RISK_THRESHOLD:
-  #   return Command(goto="report")
+  if label == "SAFE" and not needs_human_review:
+    return Command(goto="pop_cluster")
 
   return Command(goto="report")
