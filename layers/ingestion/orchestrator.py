@@ -1,9 +1,7 @@
 import argparse
 import asyncio
-import datetime
 import json
 import os
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -77,7 +75,7 @@ async def run_ingestion():
       posts.extend([post.to_dict() for post in res])
 
     if posts:
-      # out = Path("results") / f"collection_{datetime.datetime.now():%Y%m%d_%H%M%S}.json"
+      # out = Path("results") / f"collection_{datetime.now():%Y%m%d_%H%M%S}.json"
       # out.parent.mkdir(parents=True, exist_ok=True)
       # with open(out, "w", encoding="utf-8") as f:
       #   json.dump(posts, f, indent=4, ensure_ascii=False)

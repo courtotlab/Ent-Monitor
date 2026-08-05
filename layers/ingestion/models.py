@@ -1,5 +1,5 @@
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
@@ -9,13 +9,13 @@ class NormalizedPost:
   source: str
   creator_id: str
   caption_text: str
-  transcript_text: Optional[str] = None
-  hashtags: Optional[List[str]] = None
-  posted_at: Optional[str] = None
-  collected_at: Optional[str] = None
-  engagement: Dict[str, Any] = field(default_factory=dict)
-  metadata: Dict[str, Any] = field(default_factory=dict)
+  transcript_text: str | None = None
+  hashtags: list[str] | None = None
+  posted_at: str | None = None
+  collected_at: str | None = None
+  engagement: dict[str, Any] = field(default_factory=dict)
+  metadata: dict[str, Any] = field(default_factory=dict)
 
-  def to_dict(self) -> Dict[str, Any]:
+  def to_dict(self) -> dict[str, Any]:
     return asdict(self)
 

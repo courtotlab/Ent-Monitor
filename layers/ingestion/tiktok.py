@@ -1,23 +1,23 @@
-from .models import NormalizedPost
-from .normalizer import extract_id, norm_tiktok
+from layers.ingestion.models import NormalizedPost
+from layers.ingestion.normalizer import extract_id, norm_tiktok
 
 
-async def scrape_tiktok(client, usernames: list[str], limit_posts: int, limit_engagers: int, posts_per_engager: int) -> list[NormalizedPost]:
+async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_engagers: int, posts_per_engager: int) -> list[NormalizedPost]:
   posts = []
-  if not usernames: return posts
+  if not handles: return posts
 
   post_urls = []
   try:
     run = await client.actor("clockworks/tiktok-scraper").call(
       run_input={
-        "profiles": [u for u in usernames if u],
+        "profiles": [u for u in handles if u],
         "resultsPerPage": limit_posts,
         "sortBy": "createTime",
       }
     )
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
       url = item.get("webVideoUrl") or item.get("videoUrl")
-      if url and len(post_urls) < 5 * len(usernames):
+      if url and len(post_urls) < 5 * len(handles):
         post_urls.append(url)
       if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
         posts.append(norm_tiktok(item, "creator_monitor", item.get("author", {}).get("uniqueId", "")))
@@ -28,7 +28,7 @@ async def scrape_tiktok(client, usernames: list[str], limit_posts: int, limit_en
     return posts
 
   engagers = set()
-  handles = {extract_id(u).lower() for u in usernames if u}
+  handle_set = {extract_id(u).lower() for u in handles if u}
 
   try:
     run = await client.actor("clockworks/tiktok-scraper").call(
@@ -40,11 +40,11 @@ async def scrape_tiktok(client, usernames: list[str], limit_posts: int, limit_en
     )
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
       author_id = (item.get("author") or {}).get("uniqueId", "")
-      if author_id and author_id.lower() not in handles:
-        engagers.add(f"@{author_id}")
+      if author_id and author_id.lower() not in handle_set:
+        engagers.add(author_id)
       if len(engagers) >= limit_engagers: break
   except Exception as e:
-    print(f"[TT] Engager scrape error: {e}")
+    print(f"[TT] Engager comments fetch error: {e}")
 
   engagers = list(engagers)[:limit_engagers]
   if engagers:
@@ -60,7 +60,7 @@ async def scrape_tiktok(client, usernames: list[str], limit_posts: int, limit_en
         if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
           posts.append(norm_tiktok(item, "engager", item.get("author", {}).get("uniqueId", "")))
     except Exception as e:
-      print(f"[TT] Engager scrape error: {e}")
+      print(f"[TT] Engager posts fetch error: {e}")
 
   return posts
 

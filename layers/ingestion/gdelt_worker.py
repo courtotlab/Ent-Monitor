@@ -72,8 +72,8 @@ GEOGRAPHY_LOCATIONS = {"US#", "GB#", "CA#", "AU#"}
 SLUG_PATTERN = re.compile(
   r"ear|hearing|tonsil|nasal|nose|sinus|throat|child|infant|toddler|"
   r"baby|teen|teenager|pediatric|tiktok|challenge|viral|trend|remedy|"
-  r"home.treat|natural.cure|infection|injury|foreign.body|"
-  r"hospital|emergency|warning|danger|harm|safety|social.media|"
+  r"home[-\s]?treat|natural[-\s]?cure|infection|injury|foreign[-\s]?body|"
+  r"hospital|emergency|warning|danger|harm|safety|social[-\s]?media|"
   r"dare|stunt|prank|swallow|inhale|insert|stuck",
   re.IGNORECASE,
 )
@@ -118,16 +118,15 @@ def poll_gdelt_lastupdate() -> str | None:
     if not gkg_url:
       return None
 
-    with get_connection() as conn:
-      with conn.cursor() as cur:
-        cur.execute("SELECT state_value->>'last_url' FROM pipeline_state WHERE state_key = 'gdelt_poll'")
-        row = cur.fetchone()
-        last_url = row[0] if row else None
-        if gkg_url == last_url:
-          return None
+    with get_connection() as conn, conn.cursor() as cur:
+      cur.execute("SELECT state_value->>'last_url' FROM pipeline_state WHERE state_key = 'gdelt_poll'")
+      row = cur.fetchone()
+      last_url = row[0] if row else None
+      if gkg_url == last_url:
+        return None
 
     return gkg_url
-  except Exception:
+  except Exception: 
     return None
 
 
@@ -159,8 +158,17 @@ def download_and_parse_gkg(url: str) -> pd.DataFrame:
 def extract_slug(url: str) -> str:
   try:
     return url.split("?")[0].rstrip("/").split("/")[-1]
-  except Exception:
+  except (IndexError, AttributeError):
     return ""
+
+
+def _parse_tone(tone_str, default=0.0):
+  if pd.isna(tone_str) or not str(tone_str).strip():
+    return default
+  try:
+    return float(str(tone_str).split(",")[0])
+  except ValueError:
+    return default
 
 
 def run_preprocessing_funnel(df: pd.DataFrame) -> pd.DataFrame:
@@ -180,14 +188,12 @@ def run_preprocessing_funnel(df: pd.DataFrame) -> pd.DataFrame:
   def has_health_theme(themes_str):
     if not isinstance(themes_str, str):
       return False
-    themes_set = set(t.split(",")[0] for t in themes_str.split(";"))
+    themes_set = {t.split(",")[0] for t in themes_str.split(";")}
     return len(themes_set.intersection(HEALTH_THEMES)) > 0
 
   df = df[df["V2Themes"].apply(has_health_theme)]
   print(f"[GDELT] Stage 1 (Themes) survivors: {len(df)}")
 
-  if df.empty:
-    return df
 
   # Stage 2: Geography filter
   def has_geography(loc_str):
@@ -198,33 +204,23 @@ def run_preprocessing_funnel(df: pd.DataFrame) -> pd.DataFrame:
   df = df[df["V2Locations"].apply(has_geography)]
   print(f"[GDELT] Stage 2 (Geography) survivors: {len(df)}")
 
-  if df.empty:
-    return df
 
   # Stage 3: Source deduplication
-  with get_connection() as conn:
-    with conn.cursor() as cur:
-      cur.execute(
-        "SELECT url FROM gdelt_seen_articles WHERE seen_at >= NOW() - INTERVAL '48 hours'"
-      )
-      seen_urls = set(row[0] for row in cur.fetchall())
+  with get_connection() as conn, conn.cursor() as cur:
+    cur.execute(
+      "SELECT url FROM gdelt_seen_articles WHERE seen_at >= NOW() - INTERVAL '48 hours'"
+    )
+    seen_urls = {row[0] for row in cur.fetchall()}
 
   df = df[~df["DocumentIdentifier"].isin(seen_urls)]
 
-  def parse_tone(tone_str):
-    try:
-      return float(str(tone_str).split(",")[0])
-    except Exception:
-      return 0.0
-
-  df["parsed_tone"] = df["V2Tone"].apply(parse_tone)
+  df["parsed_tone"] = df["V2Tone"].apply(_parse_tone)
   df["abs_tone"] = df["parsed_tone"].abs()
 
   df = df.sort_values("abs_tone", ascending=False).groupby("SourceCommonName").head(3)
+  df = df.drop(columns=["parsed_tone", "abs_tone"])
   print(f"[GDELT] Stage 3 (Deduplication) survivors: {len(df)}")
 
-  if df.empty:
-    return df
 
   # Stage 4: URL slug signal filter
   def matches_slug(url):
@@ -234,8 +230,6 @@ def run_preprocessing_funnel(df: pd.DataFrame) -> pd.DataFrame:
   df = df[df["DocumentIdentifier"].apply(matches_slug)]
   print(f"[GDELT] Stage 4 (Slug) survivors: {len(df)}")
 
-  if df.empty:
-    return df
 
   # Stage 5: V2Tone filter
   def stage5_filter(row):
@@ -249,13 +243,7 @@ def run_preprocessing_funnel(df: pd.DataFrame) -> pd.DataFrame:
       return True  # Bypass tone filter entirely for high-signal keywords
 
     tone_str = row.get("V2Tone", "")
-    if pd.isna(tone_str) or not str(tone_str).strip():
-      return False
-    try:
-      tone = float(str(tone_str).split(",")[0])
-      return tone <= 1.0
-    except Exception:
-      return False
+    return _parse_tone(tone_str, default=999.0) <= 1.0
 
   df = df[df.apply(stage5_filter, axis=1)]
   print(f"[GDELT] Stage 5 (Tone) survivors: {len(df)}")
@@ -318,7 +306,7 @@ def fetch_article_content(url: str) -> tuple[str, str]:
         break
 
     return title, snippet
-  except Exception:
+  except Exception: 
     return "", ""
 
 
@@ -391,56 +379,55 @@ def write_to_db(confirmed_articles: list[dict]):
   if not confirmed_articles:
     return
 
-  with get_connection() as conn:
-    with conn.cursor() as cur:
-      for article in confirmed_articles:
-        url = article["article_url"]
-        title = article["article_title"]
-        source_name = article["source_name"]
-        date_str = article["article_date"]
-        score = article["sbert_score"]
-        extract = article["behavioral_extract"]
-        search_terms = article["search_terms"]
+  with get_connection() as conn, conn.cursor() as cur:
+    for article in confirmed_articles:
+      url = article["article_url"]
+      title = article["article_title"]
+      source_name = article["source_name"]
+      date_str = article["article_date"]
+      score = article["sbert_score"]
+      extract = article["behavioral_extract"]
+      search_terms = article["search_terms"]
 
-        try:
-          dt = datetime.datetime.strptime(date_str, "%Y%m%d%H%M%S")
-        except Exception:
-          dt = datetime.datetime.now()
+      try:
+        dt = datetime.datetime.strptime(date_str, "%Y%m%d%H%M%S").replace(tzinfo=datetime.UTC)
+      except ValueError:
+        dt = datetime.datetime.now(datetime.UTC)
 
-        for term in search_terms:
-          cur.execute(
-            """
-              INSERT INTO trend_signals (
-                signal_type, signal_data,
-                search_query, search_platforms,
-                search_status, detected_at
-              ) VALUES (
-                'news_match', %s,
-                %s, '["tiktok","instagram"]', 'pending', NOW()
-              )
-              ON CONFLICT DO NOTHING
-            """,
-            (
-              Json({
-                "news_source_url": url,
-                "news_source_name": source_name,
-                "news_article_title": title,
-                "news_article_date": dt.isoformat() if isinstance(dt, datetime.datetime) else str(dt),
-                "news_sbert_score": score,
-                "news_behavioral_extract": extract,
-              }),
-              term,
-            ),
-          )
-
+      for term in search_terms:
         cur.execute(
           """
-            INSERT INTO gdelt_seen_articles (url, seen_at)
-            VALUES (%s, NOW())
-            ON CONFLICT (url) DO UPDATE SET seen_at = NOW()
+            INSERT INTO trend_signals (
+              signal_type, signal_data,
+              search_query, search_platforms,
+              search_status, detected_at
+            ) VALUES (
+              'news_match', %s,
+              %s, '["tiktok","instagram"]', 'pending', NOW()
+            )
+            ON CONFLICT DO NOTHING
           """,
-          (url,),
+          (
+            Json({
+              "news_source_url": url,
+              "news_source_name": source_name,
+              "news_article_title": title,
+              "news_article_date": dt.isoformat(),
+              "news_sbert_score": score,
+              "news_behavioral_extract": extract,
+            }),
+            term,
+          ),
         )
+
+      cur.execute(
+        """
+          INSERT INTO gdelt_seen_articles (url, seen_at)
+            VALUES (%s, NOW())
+          ON CONFLICT (url) DO UPDATE SET seen_at = NOW()
+        """,
+        (url,),
+      )
 
 
 def main():
@@ -483,18 +470,11 @@ def main():
         if not title and not snippet:
           continue
 
-        tone_str = row["V2Tone"]
-        try:
-          tone = float(str(tone_str).split(",")[0])
-        except Exception:
-          tone = 0.0
-
         stage7_candidates.append(
           {
             "article_url": url,
             "source_name": str(row.get("SourceCommonName", "")),
             "article_date": str(row.get("DATE", "")),
-            "tone_score": tone,
             "article_title": title,
             "behavioral_extract": snippet,
             "full_text": f"{title}. {snippet}",
@@ -521,25 +501,17 @@ def main():
         for art in confirmed_articles:
           art["search_terms"] = extract_search_terms(art, nlp)
 
-        # print(f"\n[GDELT RESULT] Found {len(confirmed_articles)} actionable stories!")
-        # for art in confirmed_articles:
-        #   print(f"  - TITLE: {art['article_title']}")
-        #   print(f"    URL: {art['article_url']}")
-        #   print(f"    SCORE: {art['sbert_score']:.3f}")
-        #   print(f"    TERMS: {', '.join(art['search_terms'])}\n")
-
         print("[GDELT] Writing results to database...")
         write_to_db(confirmed_articles)
         print(f"[GDELT] Saved {len(confirmed_articles)} actionable stories to DB.")
 
-    with get_connection() as conn:
-      with conn.cursor() as cur:
-        cur.execute(
+    with get_connection() as conn, conn.cursor() as cur:
+      cur.execute(
           "UPDATE pipeline_state SET state_value = jsonb_build_object('last_url', %s, 'last_polled_at', NOW()), updated_at = NOW() WHERE state_key = 'gdelt_poll'",
           (gkg_url,),
         )
 
-  except Exception as e:
+  except Exception as e: 
     print(f"Error: {e}")
 
 

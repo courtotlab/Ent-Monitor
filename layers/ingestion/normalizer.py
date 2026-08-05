@@ -41,46 +41,39 @@ def norm_instagram(post_data: dict, source: str, creator_id: str) -> NormalizedP
 
 
 def norm_reddit(post_data, subreddit: str, is_praw: bool) -> NormalizedPost:
+  # Collapse PRAW object vs dict access into shared variables
+  post_id = str(post_data.id) if is_praw else str(post_data.get("id", ""))
+  source = "reddit_stream" if is_praw else "reddit_comm"
+  
   if is_praw:
-    return NormalizedPost(
-      post_id=str(post_data.id),
-      platform="reddit",
-      source="reddit_stream",
-      creator_id=str(post_data.author.name if post_data.author else "deleted"),
-      caption_text=f"{post_data.title}\n\n{post_data.selftext}".strip(),
-      posted_at=datetime.datetime.fromtimestamp(
-        post_data.created_utc, datetime.UTC
-      ).isoformat(),
-      collected_at=now_iso(),
-      engagement={
-        "likes": getattr(post_data, "score", 0),
-        "comments": getattr(post_data, "num_comments", 0),
-        "shares": 0,
-        "views": 0,
-        "score": getattr(post_data, "score", 0),
-      },
-      metadata={"subreddit": subreddit, "url": post_data.url},
-    )
+    creator = str(post_data.author.name if post_data.author else "deleted")
   else:
-    return NormalizedPost(
-      post_id=str(post_data.get("id", "")),
-      platform="reddit",
-      source="reddit_comm",
-      creator_id=str(post_data.get("author") or "deleted"),
-      caption_text=f"{post_data.get('title', '')}\n\n{post_data.get('selftext', '')}".strip(),
-      posted_at=datetime.datetime.fromtimestamp(
-        post_data.get("created_utc", 0), datetime.UTC
-      ).isoformat(),
-      collected_at=now_iso(),
-      engagement={
-        "likes": post_data.get("score", 0),
-        "comments": post_data.get("num_comments", 0),
-        "shares": 0,
-        "views": 0,
-        "score": post_data.get("score", 0),
-      },
-      metadata={"subreddit": subreddit, "url": post_data.get("url", "")},
-    )
+    creator = str(post_data.get("author") or "deleted")
+      
+  title = post_data.title if is_praw else post_data.get("title", "")
+  selftext = post_data.selftext if is_praw else post_data.get("selftext", "")
+  created_utc = post_data.created_utc if is_praw else post_data.get("created_utc", 0)
+  score = getattr(post_data, "score", 0) if is_praw else post_data.get("score", 0)
+  num_comments = getattr(post_data, "num_comments", 0) if is_praw else post_data.get("num_comments", 0)
+  url = post_data.url if is_praw else post_data.get("url", "")
+
+  return NormalizedPost(
+    post_id=post_id,
+    platform="reddit",
+    source=source,
+    creator_id=creator,
+    caption_text=f"{title}\n\n{selftext}".strip(),
+    posted_at=datetime.datetime.fromtimestamp(created_utc, datetime.UTC).isoformat(),
+    collected_at=now_iso(),
+    engagement={
+      "likes": score,
+      "comments": num_comments,
+      "shares": 0,
+      "views": 0,
+      "score": score,
+    },
+    metadata={"subreddit": subreddit, "url": url},
+  )
 
 
 def norm_tiktok(post_data: dict, source: str, creator_id: str) -> NormalizedPost:
