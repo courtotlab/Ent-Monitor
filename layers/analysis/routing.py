@@ -80,7 +80,7 @@ def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
 
   return EvidenceGap(
     missing="Insufficient evidence depth — trying news/social context",
-    suggested_query=f"{state['search_context']} danger warning pediatric",
+    suggested_query=f"{base_query} danger warning pediatric",
     suggested_tool="duckduckgo_search",
     reason="thin_evidence",
   )
@@ -163,11 +163,6 @@ def route_after_verify(state: AgentState) -> Command:
     )
 
   return Command(goto="decide")
-
-
-# Clusters must meet this bar to get a full LLM report and appear on the dashboard
-_DASHBOARD_LABELS = {"HARMFUL", "CONCERNING"}
-_DASHBOARD_RISK_THRESHOLD = 0.5
 
 
 #  Route: after DECIDE

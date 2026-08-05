@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from layers.analysis.state import AgentState
+from layers.shared.paths import get_run_dir
 from layers.shared.posts import get_engagement
 
 logger = logging.getLogger(__name__)
@@ -30,9 +31,7 @@ def decide_node(state: AgentState) -> dict:
   no_evidence = state.get("no_evidence_found", False)
   label = state.get("label", "CONCERNING")
   confidence = state.get("confidence", 0.0)
-  downgraded = state.get("downgrade_reason") is not None and "HARMFUL" in (
-    state.get("downgrade_reason") or ""
-  )
+  downgraded = state.get("downgraded_from_harmful", False)
 
   verify_passed = (
     vf is not None
@@ -71,9 +70,8 @@ def decide_node(state: AgentState) -> dict:
 def _log_skipped_safe(state: AgentState) -> None:
   """Append skipped SAFE clusters to an auditable JSON file."""
   import json
-  from pathlib import Path
   run_id = state.get("run_id", "unknown_run")
-  output_dir = Path("results") / "final" / run_id
+  output_dir = get_run_dir(run_id, "final")
   output_dir.mkdir(parents=True, exist_ok=True)
   skipped_file = output_dir / "skipped_safe.json"
   

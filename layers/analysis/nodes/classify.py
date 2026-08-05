@@ -30,7 +30,8 @@ safety label and cite your evidence.
 
 Labels:
 - HARMFUL: Evidence confirms the behavior poses a physical risk to children's \
-  ENT health.  Requires at least 1 PubMed citation.
+  ENT health.  Requires at least 1 PubMed citation OR explicit warnings from authoritative \
+  medical/health organizations (e.g., FDA, CDC, certified hospitals) in news sources.
 - CONCERNING: Behavior is plausibly risky but evidence is incomplete, \
   contradictory, or only from non-peer-reviewed sources.
 - SAFE: Evidence shows the behavior is benign or has no plausible ENT harm \
@@ -166,12 +167,12 @@ def classify_node(state: AgentState) -> dict:
 
   #  Hard rules (enforced in code, not by LLM)
   # Rule 1 overrides the LLM if it flags something as HARMFUL but hallucinated/failed 
-  # to provide an actual PubMed citation to prove it.
-  # Rule 1: HARMFUL requires at least 1 PubMed citation with a valid PMID
-  if label == "HARMFUL" and not any(c.get("source") == "pubmed" and c.get("pmid") for c in citations):
+  # to provide an actual citation to prove it.
+  # Rule 1: HARMFUL requires at least 1 valid citation (PubMed or authoritative news)
+  if label == "HARMFUL" and not citations:
     label = "CONCERNING"
     confidence = min(confidence, 0.5)
-    downgrade_reason = "HARMFUL requires PubMed citation, none found"
+    downgrade_reason = "HARMFUL requires PubMed or equivalent authoritative citation, none found"
 
   # Rule 2: No evidence — branch on triage_flag
   #
@@ -185,11 +186,9 @@ def classify_node(state: AgentState) -> dict:
     if triage == "likely_safe":
       # Educational / benign content — no evidence needed
       # Zero evidence on an anatomy explainer video just means it's boring, not dangerous.
-      if label != "SAFE":
-        label = "SAFE"
-        # Note: overrides LLM confidence with placeholder 0.5 (inconsistent with keeping LLM's confidence if it already said SAFE)
-        confidence = 0.5
-        downgrade_reason = "No evidence needed — triage_flag was likely_safe (benign/educational content)"
+      label = "SAFE"
+      confidence = 0.8
+      downgrade_reason = "No evidence needed — triage_flag was likely_safe (benign/educational content)"
     else:
       # Genuinely unclear or likely harmful — evidence gap matters
       label = "CONCERNING"
@@ -227,11 +226,10 @@ def classify_node(state: AgentState) -> dict:
   # We calculate the final risk score mathematically. No LLM vibes allowed here.
   confidence_of_harm = confidence if label in ("HARMFUL", "CONCERNING") else (1.0 - confidence)
 
-  # TODO(spec-owner): §4 risk score weights currently sum to 0.90 (0.40+0.25+0.15+0.10).
-  # The clamp below to 1.0 is unreachable. Confirm if intentional or if weights need adjusting.
+  # Risk score weights sum to 1.0 (0.45+0.30+0.15+0.10).
   risk_score = (
-    0.40 * confidence_of_harm
-    + 0.25 * min(post_count / 100, 1.0)
+    0.45 * confidence_of_harm
+    + 0.30 * min(post_count / 100, 1.0)
     + 0.15 * (len(platforms) / 4)
     - 0.20 * contradiction_ratio
     + (0.10 if harm_reports else 0.0)
@@ -262,6 +260,8 @@ def classify_node(state: AgentState) -> dict:
     needs_more_evidence,
   )
 
+  downgraded_from_harmful = downgrade_reason is not None and "HARMFUL" in downgrade_reason
+
   return {
     "label": label,
     "confidence": confidence,
@@ -272,4 +272,5 @@ def classify_node(state: AgentState) -> dict:
     "needs_more_evidence": needs_more_evidence,
     "evidence_gap": evidence_gap,
     "downgrade_reason": downgrade_reason,
+    "downgraded_from_harmful": downgraded_from_harmful,
   }

@@ -175,17 +175,18 @@ def research_node(state: AgentState) -> dict:
         )
       )
 
-    # On the first pass, also run DuckDuckGo in parallel to catch fast-moving social/news trends
-    # Medical literature is slow. We force a parallel DuckDuckGo news search 
+    # On the first pass, also run a supplementary DuckDuckGo search in the same pass
+    # Medical literature is slow. We force a DuckDuckGo news search 
     # to catch breaking FDA/CPSC warnings that haven't reached academia yet.
     if not evidence_gap and tool_name != "duckduckgo_search":
-      ddg_query = f"{query} news OR warning"
-      logger.info("RESEARCH: parallel first-pass calling duckduckgo_search with query=%r", ddg_query)
+      # Broaden the DDG search to explicitly target authoritative sources
+      ddg_query = f"{query} FDA OR hospital OR official warning OR news"
+      logger.info("RESEARCH: supplementary first-pass calling duckduckgo_search with query=%r", ddg_query)
       try:
         ddg_results = TOOL_MAP["duckduckgo_search"](ddg_query, tool_errors=tool_errors)
         results.extend(ddg_results)
       except Exception as exc:
-        logger.warning("RESEARCH parallel duckduckgo_search failed: %s", exc)
+        logger.warning("RESEARCH supplementary duckduckgo_search failed: %s", exc)
 
     new_queries.append(query)
 
@@ -199,7 +200,8 @@ def research_node(state: AgentState) -> dict:
   # Dedup by PMID (or title if no PMID) and cap to prevent LLM context confusion.
   seen = set()
   unique_evidence = []
-  for item in existing_evidence + results:
+  # LIFO order: prioritize new results so they displace flagged/older items if we hit the cap.
+  for item in results + existing_evidence:
     key = item.get("pmid") or item.get("title", "").strip().lower()
     if key and key not in seen:
       seen.add(key)
@@ -207,8 +209,8 @@ def research_node(state: AgentState) -> dict:
     elif not key:
       unique_evidence.append(item)
 
-  # Capping saves massive token costs downstream. Cap at 3 for first pass, 5 for loop-backs.
-  cap = 5 if evidence_gap else 3
+  # Capping saves massive token costs downstream.
+  cap = 3
   new_evidence = unique_evidence[:cap]
 
   return {
@@ -250,12 +252,12 @@ def _tag_relevance(
       hypothesis_block = f"""\nHarm hypothesis (the clinical mechanism being investigated): {harm_hypothesis}
 
 CRITICAL: An evidence item is ONLY relevant if it directly addresses the harm \
-hypothesis above — not just a shared keyword or topic area. For example:
+hypothesis above (or the core trend behavior) — not just a shared keyword or topic area.
+- Authoritative warnings (e.g., FDA, CDC, certified hospitals) in news articles that explicitly address the trend ARE highly relevant. Do NOT dismiss them just because they are not peer-reviewed papers. Fast-moving trends hit the news before academia.
 - A paper about laryngeal foreign body aspiration is NOT relevant to a cluster \
-about flu season / sore throat / allergy management, even though both involve \
-ENT anatomy.
+about flu season / sore throat / allergy management.
 - A paper about newborn hearing screening is NOT relevant to school-age hearing \
-screening, even though both mention "hearing screening."
+screening.
 - A paper about atopic dermatitis sleep disturbance is NOT relevant to snoring \
 from adenotonsillar hypertrophy, even though both mention "sleep."
 """

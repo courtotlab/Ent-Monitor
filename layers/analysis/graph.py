@@ -29,6 +29,7 @@ from layers.analysis.routing import (
   route_after_verify,
 )
 from layers.analysis.state import AgentState
+from layers.shared.paths import get_run_dir
 from layers.analysis.tools.duckduckgo import set_circuit_breaker
 from layers.analysis.tools.retry import DuckDuckGoCircuitBreaker
 
@@ -66,14 +67,17 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "evidence_gap": None,
     "evidence_score": 0.0,
     "tool_errors": [],
+    "harm_hypothesis": "",
     "label": None,
     "confidence": 0.0,
     "citations": [],
+    "citations_used_as_support": [],
     "risk_score": 0.0,
     "reasoning": "",
     "needs_more_evidence": False,
     "no_evidence_found": False,
     "downgrade_reason": None,
+    "downgraded_from_harmful": False,
     "verify_finding": None,
     "report": None,
     "needs_human_review": False,
@@ -126,11 +130,13 @@ def pop_cluster_node(state: AgentState) -> dict:
     "label": None,
     "confidence": 0.0,
     "citations": [],
+    "citations_used_as_support": [],
     "risk_score": 0.0,
     "reasoning": "",
     "needs_more_evidence": False,
     "no_evidence_found": False,
     "downgrade_reason": None,
+    "downgraded_from_harmful": False,
     "verify_finding": None,
     "report": None,
     "needs_human_review": False,
@@ -186,7 +192,7 @@ def build_graph() -> StateGraph:
 
 def _write_run_summary(run_id: str, cluster_results: list[dict]) -> None:
   """Write the run_summary.json file."""
-  output_dir = Path("results") / "final" / run_id
+  output_dir = get_run_dir(run_id, "final")
   output_dir.mkdir(parents=True, exist_ok=True)
 
   labels = {"HARMFUL": 0, "CONCERNING": 0, "SAFE": 0}

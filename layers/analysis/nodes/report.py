@@ -12,12 +12,12 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
-from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from layers.analysis.state import AgentState
+from layers.shared.paths import get_run_dir
 from layers.shared.posts import get_engagement
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,6 @@ class ReportSummary(BaseModel):
   evidence_status: str
   post_count: int
   platforms: list[str]
-  is_rising: bool
 
 
 def report_node(state: AgentState) -> dict:
@@ -63,8 +62,6 @@ def report_node(state: AgentState) -> dict:
 
   Only called for clusters that crossed the dashboard threshold in decide_router.
   """
-  print("  [REPORT] Generating summary report...")
-
   run_id = state.get("run_id", "unknown_run")
   cluster_id = state.get("cluster_id", "unknown")
   label = state.get("label", "CONCERNING")
@@ -141,7 +138,6 @@ def report_node(state: AgentState) -> dict:
       "evidence_status": evidence_status,
       "post_count": len(posts),
       "platforms": platforms,
-      "is_rising": False,
     }
 
   logger.info("REPORT: generated summary for %s", cluster_id)
@@ -150,7 +146,7 @@ def report_node(state: AgentState) -> dict:
   no_evidence = state.get("no_evidence_found", False)
   needs_human_review = state.get("needs_human_review", False)
   tool_degraded = state.get("tool_degraded", False)
-  downgraded = "HARMFUL" in (state.get("downgrade_reason") or "")
+  downgraded = state.get("downgraded_from_harmful", False)
 
   # Note: explicit None for citation_valid (e.g., tool error) is treated as a pass
   verify_passed = (
@@ -175,7 +171,6 @@ def report_node(state: AgentState) -> dict:
     "trend": {
       "trend_name": report.get("trend_name", cluster_id),
       "is_known_trend": state.get("is_known_trend", False),
-      "is_rising": report.get("is_rising", False),
       "post_count": len(posts),
       "platforms": platforms,
     },
@@ -234,7 +229,7 @@ def report_node(state: AgentState) -> dict:
       for te in tool_errors
     ]
 
-  output_dir = Path("results") / "final" / run_id
+  output_dir = get_run_dir(run_id, "final")
   output_dir.mkdir(parents=True, exist_ok=True)
   output_path = output_dir / f"{cluster_id}.json"
   with open(output_path, "w", encoding="utf-8") as f:

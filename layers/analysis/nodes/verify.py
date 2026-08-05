@@ -231,9 +231,8 @@ the classification.
       # and let downstream human review catch the tool_degraded flag, rather than blindly failing the cluster.
       logger.warning("VERIFY LLM check failed: %s — assuming all valid", exc)
 
-  if any(c["valid"] is False for c in citation_checks):
-    citation_valid_overall = False
-    invalid = [c for c in citation_checks if c["valid"] is False]
+  invalid = [c for c in citation_checks if c["valid"] is False]
+  if invalid:
     pmids = [str(c["citation"].get("pmid") or "?") for c in invalid]
     notes = f"Confirmed hallucinated PMIDs: {', '.join(pmids)}. " + notes
 

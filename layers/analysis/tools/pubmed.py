@@ -54,7 +54,7 @@ def _parse_articles(xml_text: str) -> list[EvidenceItem]:
         title=title or "Untitled",
         url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
         pmid=pmid,
-        snippet=(abstract or "")[:1200],
+        snippet=(abstract or "")[:800],
         is_relevant=False,  # tagged by RESEARCH LLM later
         contradicts_harm=False,
       )

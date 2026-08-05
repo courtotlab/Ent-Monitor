@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from layers.shared.paths import get_results_dir
+
 from .filter import run_quality_filter
 from .queries import fetch_active_anchors, insert_post, update_sbert_score
 from .semantic_filter import SBERT_THRESHOLD, SbertFilter
@@ -35,7 +37,7 @@ def load_posts(path: Path) -> list[dict[str, Any]]:
 
 
 def run_preprocessing(results_file: str | None = None) -> PreprocessStats:
-  results_dir = Path("results")
+  results_dir = get_results_dir()
   path = Path(results_file) if results_file else _latest_results_file(results_dir)
   if not path or not path.exists():
     raise FileNotFoundError(
@@ -46,7 +48,7 @@ def run_preprocessing(results_file: str | None = None) -> PreprocessStats:
   return process_posts(
     posts,
     source_name=path.name,
-    filtered_path=results_dir / "filtered" / path.name,
+    filtered_path=get_results_dir("filtered") / path.name,
   )
 
 

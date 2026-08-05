@@ -81,6 +81,7 @@ class AgentState(TypedDict):
   needs_more_evidence: bool
   no_evidence_found: bool
   downgrade_reason: str | None
+  downgraded_from_harmful: bool
 
   #  Verification
   verify_finding: VerifyFinding | None

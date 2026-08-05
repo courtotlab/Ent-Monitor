@@ -54,7 +54,7 @@ def semantic_scholar_search(
         title=paper.get("title", "Untitled"),
         url=url,
         pmid=pmid,
-        snippet=(paper.get("abstract") or "")[:1200],
+        snippet=(paper.get("abstract") or "")[:800],
         is_relevant=False,
         contradicts_harm=False,
       )
