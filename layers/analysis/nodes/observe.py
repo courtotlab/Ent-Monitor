@@ -17,7 +17,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
-from layers.analysis.queries import check_if_trend_exists
+from layers.analysis.queries import check_if_trend_exists, fetch_existing_trend_centroids
 from layers.analysis.state import AgentState
 from layers.shared.posts import get_engagement
 
@@ -429,6 +429,57 @@ def _semantic_merge_clusters(validated_clusters: list[dict[str, Any]]) -> list[d
 
   return final_clusters
 
+def _match_clusters_to_db_trends(validated_clusters: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  """Match clusters to existing database trends using centroid cosine similarity."""
+  DB_MATCH_THRESHOLD = 0.78
+  
+  # Only care about clusters that have a valid centroid and aren't noise
+  candidates = [c for c in validated_clusters if c["cluster_id"] != "UNCLASSIFIED" and c.get("centroid")]
+  if not candidates:
+    return validated_clusters
+
+  db_trends = fetch_existing_trend_centroids()
+  if not db_trends:
+    return validated_clusters
+
+  # Build centroid matrix for DB trends
+  db_trend_ids = [t["trend_id"] for t in db_trends]
+  db_centroids = np.array([t["centroid"] for t in db_trends])
+  
+  # Normalize DB centroids just in case, though they should be
+  norms = np.linalg.norm(db_centroids, axis=1, keepdims=True)
+  norms[norms == 0] = 1
+  db_centroids = db_centroids / norms
+
+  for cluster in candidates:
+    centroid = np.array(cluster["centroid"])
+    norm = np.linalg.norm(centroid)
+    if norm == 0:
+      continue
+    centroid = centroid / norm
+
+    # Calculate cosine similarity against all DB trends
+    sims = db_centroids @ centroid
+    best_idx = np.argmax(sims)
+    best_sim = sims[best_idx]
+
+    if best_sim >= DB_MATCH_THRESHOLD:
+      matched_trend = db_trends[best_idx]
+      logger.info(
+        "DB Match: Cluster '%s' matched to DB trend '%s' (sim=%.3f)",
+        cluster["cluster_name"], matched_trend["trend_id"], best_sim
+      )
+      
+      cluster["matched_trend_id"] = matched_trend["trend_id"]
+      cluster["is_known_trend"] = True
+      
+      # Optionally merge search context if the cluster's is weak/empty
+      if not cluster.get("search_context") and matched_trend.get("search_context"):
+        cluster["search_context"] = matched_trend["search_context"]
+
+  return validated_clusters
+
+
 def _validate_clusters(prompt: str, schema) -> Any:
   """Call gpt-4.1-mini to validate the math-based clusters using structured output."""
   llm = ChatOpenAI(
@@ -642,6 +693,9 @@ def observe_node(state: AgentState) -> dict:
     "OBSERVE (post-merge): final count %d clusters",
     len(validated_clusters)
   )
+
+  # Match clusters to existing DB trends across runs
+  validated_clusters = _match_clusters_to_db_trends(validated_clusters)
 
   # The outer orchestrator iterates validated_clusters and invokes the
   # graph once per cluster.  Return the full list for it to consume.

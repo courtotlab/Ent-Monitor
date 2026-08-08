@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from layers.analysis.state import AgentState
+from layers.analysis.queries import write_safe_posts_to_db
 from layers.shared.paths import get_run_dir
 from layers.shared.posts import get_engagement
 
@@ -60,6 +61,11 @@ def decide_node(state: AgentState) -> dict:
 
   if label == "SAFE" and not needs_human_review:
     _log_skipped_safe(state)
+    # Mark posts as SAFE in the database so they aren't re-processed
+    try:
+      write_safe_posts_to_db(posts)
+    except Exception as exc:
+      logger.warning("DECIDE: failed to write SAFE posts to DB — %s", exc)
 
   # Push computed flags back into state so REPORT and the router can read them
   return {

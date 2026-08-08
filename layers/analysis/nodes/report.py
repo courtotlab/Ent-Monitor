@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from layers.analysis.state import AgentState
+from layers.analysis.queries import write_cluster_to_db
 from layers.shared.paths import get_run_dir
 from layers.shared.posts import get_engagement
 
@@ -171,6 +172,7 @@ def report_node(state: AgentState) -> dict:
     "trend": {
       "trend_name": report.get("trend_name", cluster_id),
       "is_known_trend": state.get("is_known_trend", False),
+      "matched_trend_id": state.get("matched_trend_id"),
       "post_count": len(posts),
       "platforms": platforms,
     },
@@ -235,6 +237,12 @@ def report_node(state: AgentState) -> dict:
   with open(output_path, "w", encoding="utf-8") as f:
     json.dump(cluster_json, f, indent=2, ensure_ascii=False)
   logger.info("REPORT: wrote %s", output_path)
+
+  #  Persist to database (active_trends + posts tables)
+  try:
+    write_cluster_to_db(cluster_json)
+  except Exception as exc:
+    logger.warning("REPORT: DB write failed for %s — %s (local JSON saved)", cluster_id, exc)
 
   current_results = list(state.get("cluster_results", []))
   current_results.append(cluster_json)

@@ -95,6 +95,8 @@ CREATE TABLE active_trends (
     false_positive      BOOLEAN DEFAULT FALSE,   -- Flag indicating if human marked this trend as false positive
     fp_suppressed_until TIMESTAMPTZ,             -- Timestamp until which this false positive trend is hidden
     report_version      INTEGER DEFAULT 0,       -- Auto-incrementing version of reports generated for this trend
+    search_context      TEXT,                    -- Behavioral description used for evidence search
+    centroid            vector(384),             -- SBERT embedding centroid for cluster matching across runs
 
     CONSTRAINT chk_trends_label CHECK (label IN ('HARMFUL', 'CONCERNING', 'SAFE')),
     CONSTRAINT chk_trends_lifecycle CHECK (lifecycle_status IN (
@@ -105,6 +107,8 @@ CREATE TABLE active_trends (
 
 CREATE INDEX idx_trends_lifecycle ON active_trends(lifecycle_status);
 CREATE INDEX idx_trends_dashboard ON active_trends(false_positive, lifecycle_status, risk_score);
+CREATE INDEX idx_trends_centroid  ON active_trends USING hnsw (centroid vector_cosine_ops);
+
 
 -- Table 5: trend_lifecycle_history
 -- Immutable event log for trend state transitions.
@@ -181,7 +185,6 @@ CREATE TABLE agent_runs (
     posts_input         INTEGER DEFAULT 0,       -- Number of posts fed into the agent for classification
     clusters_formed     INTEGER DEFAULT 0,       -- Number of topic clusters formed during the run
     trends_classified   INTEGER DEFAULT 0,       -- Number of trends classified during the run
-    token_usage         JSONB,                   -- LLM API token usage statistics for the run
     report_markdown     TEXT,                    -- Generated markdown report text of the run results
     error_message       TEXT,                    -- Error message if the run failed
 
@@ -191,20 +194,7 @@ CREATE TABLE agent_runs (
 CREATE INDEX idx_agent_runs_status  ON agent_runs(status);
 CREATE INDEX idx_agent_runs_started ON agent_runs(started_at);
 
--- Table 9: agent_actions
--- Granular audit trail for AI tool calls.
-CREATE TABLE agent_actions (
-    action_id           BIGSERIAL PRIMARY KEY,   -- Unique auto-incrementing ID for the tool call
-    run_id              TEXT NOT NULL REFERENCES agent_runs(run_id),
-    node_name           TEXT NOT NULL,           -- Name of the agent node (e.g. DECIDE)
-    tool_name           TEXT NOT NULL,           -- Name of the tool called
-    tool_input          JSONB,                   -- Input arguments passed to the tool
-    tool_output         TEXT,                    -- Output returned from the tool
-    called_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
 
-CREATE INDEX idx_actions_run      ON agent_actions(run_id, called_at);
-CREATE INDEX idx_actions_tool     ON agent_actions(tool_name);
 
 -- Helper Table 1: gdelt_seen_articles
 -- URL deduplication for GDELT worker.

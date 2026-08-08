@@ -20,6 +20,7 @@ from layers.analysis.nodes.classify import classify_node
 from layers.analysis.nodes.decide import decide_node
 from layers.analysis.nodes.observe import observe_node
 from layers.analysis.nodes.report import report_node
+from layers.analysis.queries import create_agent_run, complete_agent_run
 from layers.analysis.nodes.research import research_node
 from layers.analysis.nodes.verify import verify_node
 from layers.analysis.routing import (
@@ -52,6 +53,9 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
   circuit_breaker = DuckDuckGoCircuitBreaker()
   set_circuit_breaker(circuit_breaker)
 
+  # Record the agent run in the database
+  create_agent_run(run_id, len(posts))
+
   # Initialize state with raw posts for OBSERVE to consume
   initial_state = {
     "run_id": run_id,
@@ -61,6 +65,7 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "posts": posts,
     "search_context": "",
     "is_known_trend": False,
+    "matched_trend_id": None,
     "triage_flag": "unclear",
     "search_queries": [],
     "evidence": [],
@@ -88,11 +93,24 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
 
   logger.info("Invoking Unified Graph for %d posts...", len(posts))
   app = build_graph()
-  final_state = app.invoke(initial_state)
+
+  error_message = None
+  status = "completed"
+  try:
+    final_state = app.invoke(initial_state)
+  except Exception as exc:
+    logger.error("Graph invocation failed: %s", exc)
+    error_message = str(exc)
+    status = "failed"
+    complete_agent_run(run_id, [], status=status, error_message=error_message)
+    raise
 
   cluster_results = final_state.get("cluster_results", [])
-  
-  #  Write run summary
+
+  # Finalise the agent run in the database
+  complete_agent_run(run_id, cluster_results, status=status)
+
+  #  Write run summary (local file — kept as-is)
   _write_run_summary(run_id, cluster_results)
 
   return {"run_id": run_id, "clusters": cluster_results}
@@ -118,6 +136,7 @@ def pop_cluster_node(state: AgentState) -> dict:
     "posts": cluster.get("posts", []),
     "search_context": cluster.get("search_context", ""),
     "is_known_trend": cluster.get("is_known_trend", False),
+    "matched_trend_id": cluster.get("matched_trend_id"),
     "triage_flag": cluster.get("triage_flag", "unclear"),
     
     # Reset accumulators for the new cluster

@@ -61,6 +61,7 @@ class AgentState(TypedDict):
   posts: list[dict]
   search_context: str
   is_known_trend: bool
+  matched_trend_id: str | None
   triage_flag: str  # "likely_harmful" | "unclear" | "likely_safe"
 
   #  Research accumulator (append-only)

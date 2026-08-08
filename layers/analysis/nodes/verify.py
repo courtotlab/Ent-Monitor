@@ -233,8 +233,17 @@ the classification.
 
   invalid = [c for c in citation_checks if c["valid"] is False]
   if invalid:
-    pmids = [str(c["citation"].get("pmid") or "?") for c in invalid]
-    notes = f"Confirmed hallucinated PMIDs: {', '.join(pmids)}. " + notes
+    invalid_pmids = [str(c["citation"].get("pmid")) for c in invalid if c["citation"].get("pmid")]
+    invalid_urls = [str(c["citation"].get("url")) for c in invalid if not c["citation"].get("pmid") and c["citation"].get("url")]
+    
+    parts = []
+    if invalid_pmids:
+      parts.append(f"hallucinated PMIDs: {', '.join(invalid_pmids)}")
+    if invalid_urls:
+      parts.append(f"broken URLs: {', '.join(invalid_urls)}")
+    
+    if parts:
+      notes = f"Confirmed {' and '.join(parts)}. " + notes
 
   finding = VerifyFinding(
     citation_valid=citation_valid_overall,
