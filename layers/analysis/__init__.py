@@ -1,4 +1,4 @@
-"""Layer 3 — Analysis (Agentic Classification)"""
+"""Layer 3 - Analysis (Agentic Classification)"""
 
 import logging
 from pathlib import Path

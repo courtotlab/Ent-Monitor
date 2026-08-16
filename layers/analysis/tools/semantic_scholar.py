@@ -1,4 +1,4 @@
-"""Semantic Scholar search tool — free, 1 req/s without key.
+"""Semantic Scholar search tool - free, 1 req/s without key.
 
 Uses the public Semantic Scholar Academic Graph API.
 Good for cross-discipline papers and preprints not yet indexed in PubMed.
@@ -11,7 +11,7 @@ import time
 
 import requests
 
-from layers.analysis.state import EvidenceItem
+from layers.analysis.core.state import EvidenceItem
 from layers.analysis.tools.retry import with_retry
 
 logger = logging.getLogger(__name__)
@@ -19,12 +19,18 @@ logger = logging.getLogger(__name__)
 _BASE = "https://api.semanticscholar.org/graph/v1/paper/search"
 _TIMEOUT = 15
 
+_CIRCUIT_OPEN = False
+
 @with_retry(max_attempts=4, backoff=3.0)
 def semantic_scholar_search(
   query: str,
   max_results: int = 5,
 ) -> list[EvidenceItem]:
   """Search Semantic Scholar.  Returns list[EvidenceItem]."""
+  global _CIRCUIT_OPEN
+  if _CIRCUIT_OPEN:
+    return []
+
   time.sleep(2.0)  # Pacing to avoid 429 rate limit on free tier
   resp = requests.get(
     _BASE,
@@ -35,7 +41,18 @@ def semantic_scholar_search(
     },
     timeout=_TIMEOUT,
   )
-  resp.raise_for_status()
+  try:
+    resp.raise_for_status()
+  except requests.exceptions.HTTPError as e:
+    if e.response.status_code in (429, 500, 502, 503, 504):
+      logger.warning("[CIRCUIT] Semantic Scholar %s received, opening circuit breaker for remainder of run", e.response.status_code)
+      _CIRCUIT_OPEN = True
+      return []
+    raise e
+  except requests.exceptions.Timeout as e:
+    logger.warning("[CIRCUIT] Semantic Scholar timeout, opening circuit breaker for remainder of run")
+    _CIRCUIT_OPEN = True
+    return []
   data = resp.json().get("data", [])
 
   items: list[EvidenceItem] = []

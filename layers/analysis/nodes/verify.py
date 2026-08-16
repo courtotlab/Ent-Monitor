@@ -1,10 +1,10 @@
-"""VERIFY node — citation fact-checker.
+"""VERIFY node - citation fact-checker.
 
 Re-fetches every cited PMID via pubmed_fetch_by_pmid.  Web citations get
 an HTTP HEAD check.  One batched Terra call for relevance checking.
 
 Critical distinction: PMIDNotFoundError (confirmed absent) triggers edge ③.
-A tool failure while checking does NOT — it's logged as tool_degraded.
+A tool failure while checking does NOT - it's logged as tool_degraded.
 """
 
 from __future__ import annotations
@@ -14,10 +14,11 @@ import os
 from datetime import UTC, datetime
 
 import requests
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from layers.analysis.state import AgentState, ToolError, VerifyFinding
+from layers.analysis.core.state import AgentState, ToolError, VerifyFinding
 from layers.analysis.tools.pubmed import pubmed_fetch_by_pmid
 from layers.analysis.tools.retry import PMIDNotFoundError
 
@@ -27,24 +28,23 @@ VERIFY_MODEL = "gpt-4.1"
 
 
 class VerifyResult(BaseModel):
-  citation_relevant: bool = Field(description="Does each cited paper actually support the specific claim made? Require topical, population, and context match — not just thematic overlap.")
+  citation_relevant: bool = Field(description="Does each cited paper actually support the specific claim made? Require topical, population, and context match - not just thematic overlap.")
   label_consistent: bool = Field(description="Does the overall evidence justify the label?")
-  reasoning_flags_gap: bool = Field(description="Does the classification reasoning text acknowledge a gap between the evidence and the claim (e.g., wrong population, wrong context, different age group)?")
   notes: str = Field(description="explanation if anything is wrong")
 
 
 def verify_node(state: AgentState) -> dict:
-  """VERIFY node — checks citations, then LLM evaluates relevance + consistency."""
+  """VERIFY node - checks citations, then LLM evaluates relevance + consistency."""
   # This node's sole purpose is catching LLM hallucinations from CLASSIFY.
   # We literally ping the NCBI database to ensure the PMIDs exist in the real world.
   print("  [VERIFY] Fact-checking LLM citations against databases...")
   citations = state.get("citations", [])
   evidence = state.get("evidence", [])
-  label = state.get("label", "CONCERNING")
+  label = state.get("label", "MODERATE")
   tool_errors = list(state.get("tool_errors", []))
 
   if not citations and not evidence:
-    # Nothing to verify — pass through
+    # Nothing to verify - pass through
     return {
       "verify_finding": VerifyFinding(
         citation_valid=True,
@@ -76,7 +76,7 @@ def verify_node(state: AgentState) -> dict:
           }
         )
       except PMIDNotFoundError:
-        # Confirmed hallucination — this IS a real signal
+        # Confirmed hallucination - this IS a real signal
         # The LLM completely hallucinated this PMID. We flag it as invalid, 
         # which triggers the router to loop all the way back to RESEARCH to find a real paper.
         citation_checks.append(
@@ -89,10 +89,10 @@ def verify_node(state: AgentState) -> dict:
           }
         )
         logger.warning(
-          "VERIFY: PMID %s confirmed not found — hallucinated citation", pmid
+          "VERIFY: PMID %s confirmed not found - hallucinated citation", pmid
         )
       except Exception as exc:
-        # Tool failure — NOT a confirmed-bad PMID
+        # Tool failure - NOT a confirmed-bad PMID
         any_check_failed = True
         tool_errors.append(
           ToolError(
@@ -113,7 +113,7 @@ def verify_node(state: AgentState) -> dict:
         )
         logger.warning("VERIFY: PMID %s check failed (tool error): %s", pmid, exc)
     elif url:
-      # Web citation — basic HTTP HEAD check
+      # Web citation - basic HTTP HEAD check
       try:
         head_resp = requests.head(url, timeout=5, allow_redirects=True)
         valid = head_resp.status_code < 400
@@ -138,7 +138,7 @@ def verify_node(state: AgentState) -> dict:
         )
         any_check_failed = True
     else:
-      logger.warning("VERIFY: Citation malformed (no pmid or url) — treating as check failed: %s", cit.get("title", "Unknown"))
+      logger.warning("VERIFY: Citation malformed (no pmid or url) - treating as check failed: %s", cit.get("title", "Unknown"))
       citation_checks.append(
         {
           "citation": cit,
@@ -195,41 +195,34 @@ Citations checked:
 All evidence:
 {evidence_summary}
 
-Evaluate with STRICT criteria — thematic overlap is NOT sufficient:
+Evaluate with STRICT criteria - thematic overlap is NOT sufficient:
 
 1. citation_relevant: Does each cited paper SPECIFICALLY address:
    (a) The EXACT population described in the post (e.g., pediatric vs. adult, \
 newborn vs. school-age, toddler vs. adolescent)?  A paper about newborn hearing \
 screening is NOT relevant to a school-age hearing screening post.
-   (b) The EXACT clinical mechanism stated in the harm hypothesis above?  A paper \
-about "sleep disturbance from atopic dermatitis" is NOT relevant to a "snoring from \
-adenotonsillar hypertrophy" post, even though both involve sleep.
+   (b) The clinical mechanism stated in the harm hypothesis? (NOTE: General mechanism matches like "foreign body trauma" or "ototoxicity" ARE relevant even if they don't explicitly name the exact household item in the post).
    (c) The specific behavior or exposure, not just the general topic area?
    If ANY of (a), (b), or (c) fails, set citation_relevant = false.
 
 2. label_consistent: Given ONLY the truly relevant evidence (not thematically-adjacent \
 evidence), is the assigned label justified?
-
-3. reasoning_flags_gap: Read the classification reasoning text above.  Does it \
-acknowledge ANY mismatch between the evidence and the claim (e.g., "the evidence \
-is for newborn screening, not school screening" or "the cited study addresses a \
-different mechanism" or "evidence is from a different population")?  If so, set \
-this to true — this is a strong signal that the citation does not actually support \
-the classification.
 """
-      result: VerifyResult = llm.invoke(prompt)
+      messages = [HumanMessage(content=prompt)]
+      result: VerifyResult = llm.invoke(messages)
       citation_relevant = result.citation_relevant
       label_consistent = result.label_consistent
       notes = result.notes
 
-      if result.reasoning_flags_gap:
-        citation_relevant = False
-        notes = "CLASSIFY reasoning acknowledged evidence gap. " + notes
-        logger.info("VERIFY: reasoning_flags_gap=True - forcing citation_relevant=False")
+      # Use the structured flag from CLASSIFY instead of re-parsing prose
+      mechanism_level_match = state.get("mechanism_level_match", False)
+      if not mechanism_level_match and not citation_relevant:
+        notes = "CLASSIFY flagged no mechanism_level_match. " + notes
+        logger.info("VERIFY: mechanism_level_match=False - forcing citation_relevant=False")
     except Exception as exc:
       # Note: Failing open here is intentional. If the LLM check crashes, we assume citations are valid
       # and let downstream human review catch the tool_degraded flag, rather than blindly failing the cluster.
-      logger.warning("VERIFY LLM check failed: %s — assuming all valid", exc)
+      logger.warning("VERIFY LLM check failed: %s - assuming all valid", exc)
 
   invalid = [c for c in citation_checks if c["valid"] is False]
   if invalid:

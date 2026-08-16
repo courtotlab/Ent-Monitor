@@ -1,9 +1,9 @@
 """Shared retry infrastructure for Layer 3 search tools.
 
 Contains:
-- PMIDNotFoundError       — domain exception for confirmed-absent PMIDs
-- @with_retry decorator   — exponential backoff, parameterized empty return
-- DuckDuckGoCircuitBreaker — run-level singleton, opens after 3 failures
+- PMIDNotFoundError       - domain exception for confirmed-absent PMIDs
+- @with_retry decorator   - exponential backoff, parameterized empty return
+- DuckDuckGoCircuitBreaker - run-level singleton, opens after 3 failures
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class PMIDNotFoundError(Exception):
   """Raised when NCBI cleanly confirms a PMID does not exist.
 
-  Non-retriable and NOT caught by @with_retry — must propagate so
+  Non-retriable and NOT caught by @with_retry - must propagate so
   VERIFY can distinguish 'confirmed absent' from 'tool failed'.
   """
 
@@ -34,7 +34,7 @@ def with_retry(
 ):
   """Decorator: retry on transient errors, return ``empty_return()`` when exhausted.
 
-  - ``PMIDNotFoundError`` is never caught — it propagates as a real signal.
+  - ``PMIDNotFoundError`` is never caught - it propagates as a real signal.
   - Transient errors (timeout, connection, 5xx) are retried with exponential backoff.
   - Non-retriable errors (parse failures, 4xx) fail fast and return empty.
   """
@@ -65,7 +65,7 @@ def with_retry(
 class DuckDuckGoCircuitBreaker:
   """Opens after ``threshold`` failures in one run; skips DDG for the remainder.
 
-  Thread-safe — uses a lock for the counter.  Instantiated once per run
+  Thread-safe - uses a lock for the counter.  Instantiated once per run
   in the orchestration loop, *not* stored in AgentState (persists across
   clusters within the same run, resets between runs).
   """
@@ -86,7 +86,7 @@ class DuckDuckGoCircuitBreaker:
       if self._failures >= self._threshold:
         self._open = True
         logger.warning(
-          "[CIRCUIT] DuckDuckGo circuit breaker OPEN after %d failures — "
+          "[CIRCUIT] DuckDuckGo circuit breaker OPEN after %d failures - "
           "skipping DDG for remainder of run",
           self._failures,
         )

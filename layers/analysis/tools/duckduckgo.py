@@ -1,4 +1,4 @@
-"""DuckDuckGo search tool — free, no API key.
+"""DuckDuckGo search tool - free, no API key.
 
 Uses the ``ddgs`` Python package.  Checks the circuit breaker before every call;
 if the breaker is open, returns [] immediately and logs a ``circuit_open`` ToolError.
@@ -16,12 +16,12 @@ from datetime import UTC, datetime
 
 from ddgs import DDGS
 
-from layers.analysis.state import EvidenceItem, ToolError
+from layers.analysis.core.state import EvidenceItem, ToolError
 from layers.analysis.tools.retry import DuckDuckGoCircuitBreaker, with_retry
 
 logger = logging.getLogger(__name__)
 
-# Module-level default — overridden by the orchestrator per run.
+# Module-level default - overridden by the orchestrator per run.
 # Assumes sequential single-threaded execution.
 _circuit_breaker = DuckDuckGoCircuitBreaker()
 

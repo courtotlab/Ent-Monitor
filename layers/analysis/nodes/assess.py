@@ -1,7 +1,7 @@
-"""ASSESS node — deterministic evidence quality scorer.
+"""ASSESS node - deterministic evidence quality scorer.
 
 No LLM.  Wraps compute_evidence_score() and route_after_assess() from routing.py.
-This node exists purely to make the graph wiring clean — the actual logic
+This node exists purely to make the graph wiring clean - the actual logic
 lives in routing.py.
 """
 
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import logging
 
-from layers.analysis.routing import compute_evidence_score, EVIDENCE_THRESHOLD
-from layers.analysis.state import AgentState
+from layers.analysis.core.routing import compute_evidence_score, EVIDENCE_THRESHOLD
+from layers.analysis.core.state import AgentState
 
 logger = logging.getLogger(__name__)
 

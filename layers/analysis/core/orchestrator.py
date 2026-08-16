@@ -7,8 +7,8 @@ from pathlib import Path
 # Add the root directory to path so imports work correctly
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from layers.analysis.graph import run_analysis
-from layers.analysis.queries import fetch_unprocessed_posts
+from layers.analysis.core.graph import run_analysis
+from layers.analysis.db.queries import fetch_unprocessed_posts
 
 # Optional: configure root logger to mirror the analysis.log formatting to console
 logging.basicConfig(

@@ -1,4 +1,4 @@
-"""REPORT node — short structured summary + final JSON output.
+"""REPORT node â€” short structured summary + final JSON output.
 
 GPT-4.1-mini at low effort.  Only runs for clusters that cleared the
 decide_router threshold (HARMFUL / CONCERNING / risk >= 0.5 / no_evidence).
@@ -13,11 +13,12 @@ import logging
 import os
 from datetime import UTC, datetime
 
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from layers.analysis.state import AgentState
-from layers.analysis.queries import write_cluster_to_db
+from layers.analysis.core.state import AgentState
+from layers.analysis.db.queries import write_cluster_to_db
 from layers.shared.paths import get_run_dir
 from layers.shared.posts import get_engagement
 
@@ -41,6 +42,8 @@ Key evidence:
 Classification reasoning:
 {reasoning}
 
+CRITICAL: Ensure the summary and harm mechanism ONLY describe the exact behaviors mentioned in the provided Key evidence and classification reasoning. Do not pull in unrelated clinical terms or behaviors.
+
 Generate a structured summary for this cluster.
 """
 
@@ -59,7 +62,7 @@ class ReportSummary(BaseModel):
 
 
 def report_node(state: AgentState) -> dict:
-  """REPORT node — generates summary, writes full JSON, appends to cluster_results.
+  """REPORT node â€” generates summary, writes full JSON, appends to cluster_results.
 
   Only called for clusters that crossed the dashboard threshold in decide_router.
   """
@@ -123,17 +126,18 @@ def report_node(state: AgentState) -> dict:
       temperature=0,
     ).with_structured_output(ReportSummary)
     
-    result_obj: ReportSummary = llm.invoke(prompt)
+    messages = [HumanMessage(content=prompt)]
+    result_obj: ReportSummary = llm.invoke(messages)
     report = result_obj.model_dump()
   except Exception as exc:
-    logger.warning("REPORT LLM failed: %s — generating minimal report", exc)
+    logger.warning("REPORT LLM failed: %s â€” generating minimal report", exc)
     report = {
       "cluster_id": cluster_id,
       "label": label,
       "risk_score": risk_score,
       "trend_name": state.get("search_context", "Unknown trend"),
       "summary": f"Classification: {label} with confidence {confidence:.2f}",
-      "harm_mechanism": "Unable to generate — LLM error",
+      "harm_mechanism": "Unable to generate â€” LLM error",
       "key_evidence": [],
       "confidence": confidence,
       "evidence_status": evidence_status,
@@ -162,6 +166,8 @@ def report_node(state: AgentState) -> dict:
     "processed_at": datetime.now(UTC).isoformat(),
     "classification": {
       "label": label,
+      "lifecycle": state.get("lifecycle", "Isolated incident"),
+      "verification": state.get("verification", "PROVISIONAL"),
       "confidence": confidence,
       "risk_score": risk_score,
       "evidence_status": evidence_status,
@@ -176,6 +182,7 @@ def report_node(state: AgentState) -> dict:
       "post_count": len(posts),
       "platforms": platforms,
     },
+    "centroid": state.get("centroid", []),
     "posts": [
       {
         "post_id": p.get("post_id", ""),
@@ -213,7 +220,7 @@ def report_node(state: AgentState) -> dict:
     },
     "flags": {
       "needs_human_review": needs_human_review,
-      "rising_non_trend": False,  # RESERVED UNUSED FIELD - TODO: §6 velocity monitoring integration
+      "rising_non_trend": False,  # RESERVED UNUSED FIELD - TODO: Âvelocity monitoring integration
       "no_literature_found": no_evidence,
       "downgraded_from_harmful": downgraded,
       "tool_degraded": tool_degraded,
@@ -238,11 +245,11 @@ def report_node(state: AgentState) -> dict:
     json.dump(cluster_json, f, indent=2, ensure_ascii=False)
   logger.info("REPORT: wrote %s", output_path)
 
-  #  Persist to database (active_trends + posts tables)
+  #  Persist to database (trends + posts tables)
   try:
     write_cluster_to_db(cluster_json)
   except Exception as exc:
-    logger.warning("REPORT: DB write failed for %s — %s (local JSON saved)", cluster_id, exc)
+    logger.warning("REPORT: DB write failed for %s â€” %s (local JSON saved)", cluster_id, exc)
 
   current_results = list(state.get("cluster_results", []))
   current_results.append(cluster_json)

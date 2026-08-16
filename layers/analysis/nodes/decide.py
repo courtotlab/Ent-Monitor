@@ -1,16 +1,15 @@
-"""DECIDE node — classification gate only.
+"""DECIDE node - deterministic classification gate.
 
-No LLM. Determines the final label/flags and updates state.
-Writing the full JSON output is now REPORT's responsibility so that only
-dashboard-worthy clusters (HARMFUL / CONCERNING / high-risk) get a file.
+No LLM. No human review. Every cluster resolves to a final label automatically.
+Sets tool_degraded flag and handles LOW post DB writes.
 """
 
 from __future__ import annotations
 
 import logging
 
-from layers.analysis.state import AgentState
-from layers.analysis.queries import write_safe_posts_to_db
+from layers.analysis.core.state import AgentState
+from layers.analysis.db.queries import write_safe_posts_to_db, write_cluster_to_db
 from layers.shared.paths import get_run_dir
 from layers.shared.posts import get_engagement
 
@@ -18,75 +17,95 @@ logger = logging.getLogger(__name__)
 
 
 def decide_node(state: AgentState) -> dict:
-  """DECIDE node — sets final classification flags in state.
+  """DECIDE node - sets final classification flags in state.
 
-  Does NOT write any files.  The decide_router will decide whether to proceed
-  to REPORT (which writes the file + appends to cluster_results) or skip
-  straight back to pop_cluster.
+  Every cluster auto-resolves. No deferred/pending states.
+  The decide_router determines whether to proceed to REPORT or skip to pop_cluster.
   """
   cluster_id = state.get("cluster_id", "unknown")
   posts = state.get("posts", [])
   tool_errors = state.get("tool_errors", [])
   vf = state.get("verify_finding")
-
-  no_evidence = state.get("no_evidence_found", False)
-  label = state.get("label", "CONCERNING")
-  confidence = state.get("confidence", 0.0)
-  downgraded = state.get("downgraded_from_harmful", False)
-
-  verify_passed = (
-    vf is not None
-    and vf.get("citation_valid", True) is not False
-    and vf.get("citation_relevant", True)
-  )
-
-  needs_human_review = (
-    label in ("HARMFUL", "CONCERNING")
-    or downgraded
-    or (no_evidence and label == "SAFE" and confidence < 0.7)
-    or not verify_passed
-  )
+  label = state.get("label", "MODERATE")
 
   tool_degraded = bool(tool_errors) or (
     vf is not None and vf.get("citation_check_failed", False)
   )
 
   logger.info(
-    "DECIDE: cluster=%s label=%s risk=%.3f needs_review=%s",
+    "DECIDE: cluster=%s label=%s risk=%.3f low_confidence=%s",
     cluster_id,
     label,
     state.get("risk_score", 0.0),
-    needs_human_review,
+    state.get("low_confidence", False),
   )
 
-  if label == "SAFE" and not needs_human_review:
-    _log_skipped_safe(state)
-    # Mark posts as SAFE in the database so they aren't re-processed
+  current_results = list(state.get("cluster_results", []))
+
+  if label == "LOW" and not state.get("low_confidence", False):
+    _log_skipped_low(state)
     try:
       write_safe_posts_to_db(posts)
+      minimal_cluster_json = {
+        "run_id": state.get("run_id"),
+        "cluster_id": cluster_id,
+        "trend": {
+            "trend_name": state.get("search_context") or cluster_id,
+            "is_known_trend": state.get("is_known_trend", False),
+            "matched_trend_id": state.get("matched_trend_id"),
+            "post_count": len(posts),
+            "platforms": list(set(p.get("platform", "unknown") for p in posts)),
+        },
+        "classification": {
+            "label": label,
+            "lifecycle": state.get("lifecycle", "Isolated incident"),
+            "verification": state.get("verification", "PROVISIONAL"),
+            "risk_score": state.get("risk_score", 0.0),
+        },
+        "posts": posts,
+        "centroid": state.get("centroid", []),
+        "search_context": state.get("search_context", ""),
+      }
+      write_cluster_to_db(minimal_cluster_json)
     except Exception as exc:
-      logger.warning("DECIDE: failed to write SAFE posts to DB — %s", exc)
+      logger.warning("DECIDE: failed to write LOW posts/cluster to DB - %s", exc)
+      
+    # Append a minimal cluster_json so it appears in run_summary.json
+    current_results.append({
+        "cluster_id": cluster_id,
+        "classification": {
+            "label": label,
+            "lifecycle": state.get("lifecycle", "Isolated incident"),
+            "verification": state.get("verification", "PROVISIONAL"),
+            "confidence": state.get("confidence", 1.0),
+            "risk_score": state.get("risk_score", 0.0),
+            "evidence_status": "skipped_low",
+        },
+        "flags": {
+            "low_confidence": False,
+        }
+    })
 
-  # Push computed flags back into state so REPORT and the router can read them
   return {
-    "needs_human_review": needs_human_review,
     "tool_degraded": tool_degraded,
+    "cluster_results": current_results,
   }
 
-def _log_skipped_safe(state: AgentState) -> None:
-  """Append skipped SAFE clusters to an auditable JSON file."""
+def _log_skipped_low(state: AgentState) -> None:
+  """Append skipped LOW clusters to an auditable JSON file."""
   import json
   run_id = state.get("run_id", "unknown_run")
   output_dir = get_run_dir(run_id, "final")
   output_dir.mkdir(parents=True, exist_ok=True)
-  skipped_file = output_dir / "skipped_safe.json"
-  
+  skipped_file = output_dir / "skipped_low.json"
+
   entry = {
     "cluster_id": state.get("cluster_id", "unknown"),
     "trend_name": state.get("search_context", "Unknown trend"),
     "post_count": len(state.get("posts", [])),
     "risk_score": state.get("risk_score", 0.0),
     "evidence_score": state.get("evidence_score", 0.0),
+    "low_confidence": state.get("low_confidence", False),
     "posts": [
       {
         "post_id": p.get("post_id", ""),

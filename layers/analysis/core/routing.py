@@ -2,12 +2,12 @@
 
 Contains:
 - EVIDENCE_THRESHOLD constant
-- compute_evidence_score()   — deterministic formula (§3 ASSESS)
-- build_evidence_gap()       — picks next query + tool when score is low
-- route_after_assess()       — ASSESS → CLASSIFY or RESEARCH
-- route_after_classify()     — CLASSIFY → VERIFY or RESEARCH
-- route_after_verify()       — VERIFY → DECIDE, RESEARCH, or CLASSIFY
-- route_after_decide()       — DECIDE → REPORT or pop_cluster
+- compute_evidence_score()   - deterministic formula (ASSESS)
+- build_evidence_gap()       - picks next query + tool when score is low
+- route_after_assess()       - ASSESS → CLASSIFY or RESEARCH
+- route_after_classify()     - CLASSIFY → VERIFY or RESEARCH
+- route_after_verify()       - VERIFY → DECIDE, RESEARCH, or CLASSIFY
+- route_after_decide()       - DECIDE → REPORT or pop_cluster
 """
 
 from __future__ import annotations
@@ -16,18 +16,18 @@ from typing import TYPE_CHECKING
 
 from langgraph.types import Command
 
-from layers.analysis.state import EvidenceGap
+from layers.analysis.core.state import EvidenceGap
 
 if TYPE_CHECKING:
-  from layers.analysis.state import AgentState
+  from layers.analysis.core.state import AgentState
 
-# Deliberately modest — don't demand 3 perfect papers before proceeding.
+# Deliberately modest - don't demand 3 perfect papers before proceeding.
 EVIDENCE_THRESHOLD = 0.45
 
 
-#  Deterministic evidence-quality formula (§3 ASSESS)
+#  Deterministic evidence-quality formula (ASSESS)
 def compute_evidence_score(state: AgentState) -> float:
-  """Pure formula — no LLM.  Returns 0.0–1.0."""
+  """Pure formula - no LLM.  Returns 0.0–1.0."""
   evidence = state["evidence"]
   if not evidence:
     return 0.0
@@ -46,7 +46,7 @@ def compute_evidence_score(state: AgentState) -> float:
   return max(0.0, min(raw, 1.0))
 
 
-#  Build the next evidence gap struct (§3 ASSESS)
+#  Build the next evidence gap struct (ASSESS)
 def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
   """Decide what's missing and suggest a query + tool for RESEARCH.
 
@@ -59,7 +59,7 @@ def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
 
   # Prefer harm_hypothesis for retry queries; fall back to search_context
   hypothesis = state.get("harm_hypothesis", "") or ""
-  base_query = hypothesis if hypothesis and hypothesis != "none — benign content" else state["search_context"]
+  base_query = hypothesis if hypothesis and hypothesis != "none - benign content" else state["search_context"]
 
   if pubmed_count == 0:
     return EvidenceGap(
@@ -79,7 +79,7 @@ def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
     )
 
   return EvidenceGap(
-    missing="Insufficient evidence depth — trying news/social context",
+    missing="Insufficient evidence depth - trying news/social context",
     suggested_query=f"{base_query} danger warning pediatric",
     suggested_tool="duckduckgo_search",
     reason="thin_evidence",
@@ -88,7 +88,7 @@ def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
 
 #  Route: after ASSESS
 def route_after_assess(state: AgentState) -> Command:
-  """Edge (1) — ASSESS routes to CLASSIFY (sufficient) or RESEARCH (gap)."""
+  """Edge (1) - ASSESS routes to CLASSIFY (sufficient) or RESEARCH (gap)."""
   score = compute_evidence_score(state)
   retries_left = state["research_retries_left"]
 
@@ -115,7 +115,7 @@ def route_after_assess(state: AgentState) -> Command:
 
 #  Route: after CLASSIFY
 def route_after_classify(state: AgentState) -> Command:
-  """Edge (2) — CLASSIFY routes to VERIFY or back to RESEARCH."""
+  """Edge (2) - CLASSIFY routes to VERIFY or back to RESEARCH."""
   if state.get("needs_more_evidence") and state["research_retries_left"] > 0:
     return Command(
       goto="research",
@@ -129,12 +129,12 @@ def route_after_classify(state: AgentState) -> Command:
 
 #  Route: after VERIFY
 def route_after_verify(state: AgentState) -> Command:
-  """Edges (3) (4) — VERIFY routes to DECIDE, RESEARCH, or CLASSIFY."""
+  """Edges (3) (4) - VERIFY routes to DECIDE, RESEARCH, or CLASSIFY."""
   finding = state["verify_finding"]
   retries_left = state["verify_retries_left"] > 0
 
   # A citation that couldn't be checked (tool failure) is NOT a confirmed-bad
-  # PMID — must not trigger edge (3) or consume verify_retries_left.
+  # PMID - must not trigger edge (3) or consume verify_retries_left.
   if finding.get("citation_check_failed"):
     return Command(goto="decide")
 
@@ -145,7 +145,7 @@ def route_after_verify(state: AgentState) -> Command:
         update={
           "evidence_gap": EvidenceGap(
             missing=finding["notes"],
-            suggested_query=f"replace citation: {state['search_queries'][-1]}",
+            suggested_query=f"{state.get('harm_hypothesis', state.get('search_context', ''))} alternative citation",
             suggested_tool="pubmed_search",
             reason="bad_citation",
           ),
@@ -167,12 +167,17 @@ def route_after_verify(state: AgentState) -> Command:
 
 #  Route: after DECIDE
 def route_after_decide(state: AgentState) -> Command:
-  """Edges (5) (6) — DECIDE gates the expensive REPORT node."""
-  label = state.get("label", "CONCERNING")
-  needs_human_review = state.get("needs_human_review", False)
+  """Deterministic severity-based routing.
 
-  # Cost-saving bypass for benign content
-  if label == "SAFE" and not needs_human_review:
+  LOW + not low_confidence → skip report (cost saving).
+  Everything else → report.
+  low_confidence tier-up: treated as one severity tier higher for routing.
+  """
+  label = state.get("label", "MODERATE")
+  low_confidence = state.get("low_confidence", False)
+
+  # LOW with no confidence issues → skip report entirely
+  if label == "LOW" and not low_confidence:
     return Command(goto="pop_cluster")
 
   return Command(goto="report")

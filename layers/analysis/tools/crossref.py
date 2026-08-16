@@ -1,4 +1,4 @@
-"""CrossRef search tool — free, uses the 'polite pool' (email in User-Agent).
+"""CrossRef search tool - free, uses the 'polite pool' (email in User-Agent).
 
 Good for finding full DOI metadata for papers discovered via DuckDuckGo.
 """
@@ -10,7 +10,7 @@ import re
 
 import requests
 
-from layers.analysis.state import EvidenceItem
+from layers.analysis.core.state import EvidenceItem
 from layers.analysis.tools.retry import with_retry
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ def crossref_search(
     doi = item.get("DOI", "")
     abstract = item.get("abstract", "")
 
-    # CrossRef abstracts sometimes contain JATS XML tags — strip naively.
+    # CrossRef abstracts sometimes contain JATS XML tags - strip naively.
     if abstract:
       abstract = re.sub(r"<[^>]+>", "", abstract)
 

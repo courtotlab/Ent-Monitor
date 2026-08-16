@@ -1,4 +1,4 @@
-"""Layer 3 Analysis — LangGraph StateGraph wiring + sequential orchestration.
+"""Layer 3 Analysis - LangGraph StateGraph wiring + sequential orchestration.
 
 This is the entry point for running the analysis pipeline.  The outer loop
 processes clusters sequentially to prevent DECIDE merge-check race conditions.
@@ -20,16 +20,16 @@ from layers.analysis.nodes.classify import classify_node
 from layers.analysis.nodes.decide import decide_node
 from layers.analysis.nodes.observe import observe_node
 from layers.analysis.nodes.report import report_node
-from layers.analysis.queries import create_agent_run, complete_agent_run
+from layers.analysis.db.queries import create_agent_run, complete_agent_run, merge_posts_into_trend
 from layers.analysis.nodes.research import research_node
 from layers.analysis.nodes.verify import verify_node
-from layers.analysis.routing import (
+from layers.analysis.core.routing import (
   route_after_assess,
   route_after_classify,
   route_after_decide,
   route_after_verify,
 )
-from layers.analysis.state import AgentState
+from layers.analysis.core.state import AgentState
 from layers.shared.paths import get_run_dir
 from layers.analysis.tools.duckduckgo import set_circuit_breaker
 from layers.analysis.tools.retry import DuckDuckGoCircuitBreaker
@@ -45,6 +45,7 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
   1. Calls OBSERVE once on all posts to produce a queue of clusters.
   2. The graph uses a pop_cluster loop to process clusters sequentially
      (RESEARCH → ASSESS → CLASSIFY → VERIFY → REPORT → DECIDE).
+  3. Known trends take a fast-path merge (skip LLM pipeline).
   """
   if not run_id:
     run_id = f"run_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
@@ -67,6 +68,13 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "is_known_trend": False,
     "matched_trend_id": None,
     "triage_flag": "unclear",
+    # Known-trend context (populated by OBSERVE for matched clusters)
+    "db_trend_label": None,
+    "db_trend_risk_score": None,
+    "db_trend_post_count": None,
+    "db_trend_lifecycle": None,
+    "db_trend_last_seen": None,
+    # Research accumulators
     "search_queries": [],
     "evidence": [],
     "evidence_gap": None,
@@ -77,6 +85,7 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "confidence": 0.0,
     "citations": [],
     "citations_used_as_support": [],
+    "supporting_evidence_ids": [],
     "risk_score": 0.0,
     "reasoning": "",
     "needs_more_evidence": False,
@@ -85,8 +94,8 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "downgraded_from_harmful": False,
     "verify_finding": None,
     "report": None,
-    "needs_human_review": False,
     "tool_degraded": False,
+    "low_confidence": False,
     "research_retries_left": 3,
     "verify_retries_left": 3,
   }
@@ -110,16 +119,93 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
   # Finalise the agent run in the database
   complete_agent_run(run_id, cluster_results, status=status)
 
-  #  Write run summary (local file — kept as-is)
+  #  Write run summary (local file - kept as-is)
   _write_run_summary(run_id, cluster_results)
 
   return {"run_id": run_id, "clusters": cluster_results}
 
 
+def merge_known_node(state: AgentState) -> dict:
+  """Fast-path: merge new posts into an existing trend without LLM calls.
+
+  Skips RESEARCH → ASSESS → CLASSIFY → VERIFY → REPORT entirely.
+  Calls merge_posts_into_trend() which handles:
+  - Post count increment + platform merge
+  - Weighted centroid merge
+  - Resurfacing detection (>14 day gap)
+  - Burst-triggered velocity scheduling
+  - Lifecycle event logging
+  """
+  cluster_id = state.get("cluster_id", "unknown")
+  trend_id = state.get("matched_trend_id")
+  posts = state.get("posts", [])
+  centroid = state.get("centroid")
+
+  print(f"  [MERGE] Fast-path: merging {len(posts)} posts into existing trend {trend_id}")
+
+  result = merge_posts_into_trend(trend_id, posts, new_centroid=centroid)
+
+  if result is None:
+    logger.warning("MERGE: fast-path failed for trend %s - will appear as skipped", trend_id)
+    return {"cluster_results": list(state.get("cluster_results", []))}
+
+  # Build a minimal cluster_result entry so the dashboard sees the merge
+  platforms = list(set(p.get("platform", "unknown") for p in posts))
+  cluster_json = {
+    "run_id": state.get("run_id", "unknown_run"),
+    "cluster_id": cluster_id,
+    "processed_at": datetime.now(UTC).isoformat(),
+    "trend": {
+      "trend_name": state.get("search_context", "unknown_trend"),
+      "is_known_trend": True,
+      "matched_trend_id": trend_id,
+      "post_count": result["post_count"],
+      "platforms": platforms,
+    },
+    "classification": {
+      "label": result.get("label", "MODERATE"),
+      "risk_score": result.get("risk_score", 0.5),
+      "verification": result.get("verification_status", "CONFIRMED"),
+      "lifecycle": result.get("lifecycle_status", "Resurfacing"),
+    },
+    "centroid": centroid,
+    "posts": [
+      {
+        "post_id": p.get("post_id", ""),
+        "platform": p.get("platform", ""),
+        "caption_text": (p.get("caption_text") or "")[:200],
+        "sbert_score": p.get("sbert_score", 0.0),
+        "likes": p.get("likes", 0),
+        "views": p.get("views", 0),
+      }
+      for p in posts[:20]
+    ],
+    "evidence": [],
+    "reasoning": {
+      "why_this_label": f"Fast-path merge into existing trend (DB label: {result['label']})",
+    },
+    "report_summary": {
+      "summary": f"Merged {len(posts)} new posts into existing trend '{trend_id}'",
+      "harm_mechanism": "",
+      "key_evidence": [],
+    },
+    "flags": {
+      "low_confidence": False,
+      "no_literature_found": False,
+      "downgraded_from_harmful": False,
+      "tool_degraded": False,
+    },
+  }
+
+  current_results = list(state.get("cluster_results", []))
+  current_results.append(cluster_json)
+
+  logger.info("MERGE: fast-path completed for trend %s - %d posts merged", trend_id, len(posts))
+  return {"cluster_results": current_results}
+
+
 def pop_cluster_node(state: AgentState) -> dict:
   """Pops the next cluster from the queue and resets research state."""
-  # This acts as our Queue Manager. We process clusters one at a time 
-  # sequentially to prevent race conditions during DB writes and graph state merges.
   queue = state.get("clusters_queue", [])
   if not queue:
     logger.info("No more clusters in queue. Finishing run.")
@@ -137,7 +223,14 @@ def pop_cluster_node(state: AgentState) -> dict:
     "search_context": cluster.get("search_context", ""),
     "is_known_trend": cluster.get("is_known_trend", False),
     "matched_trend_id": cluster.get("matched_trend_id"),
+    "centroid": cluster.get("centroid", []),
     "triage_flag": cluster.get("triage_flag", "unclear"),
+    # Known-trend context from DB match
+    "db_trend_label": cluster.get("db_trend_label"),
+    "db_trend_risk_score": cluster.get("db_trend_risk_score"),
+    "db_trend_post_count": cluster.get("db_trend_post_count"),
+    "db_trend_lifecycle": cluster.get("db_trend_lifecycle"),
+    "db_trend_last_seen": cluster.get("db_trend_last_seen"),
     
     # Reset accumulators for the new cluster
     "search_queries": [],
@@ -150,6 +243,7 @@ def pop_cluster_node(state: AgentState) -> dict:
     "confidence": 0.0,
     "citations": [],
     "citations_used_as_support": [],
+    "supporting_evidence_ids": [],
     "risk_score": 0.0,
     "reasoning": "",
     "needs_more_evidence": False,
@@ -158,16 +252,36 @@ def pop_cluster_node(state: AgentState) -> dict:
     "downgraded_from_harmful": False,
     "verify_finding": None,
     "report": None,
-    "needs_human_review": False,
     "tool_degraded": False,
+    "low_confidence": False,
     "research_retries_left": 3,
     "verify_retries_left": 3,
   }
 
 def route_after_pop(state: AgentState) -> Command:
-  """If there's an active cluster, go to research. Otherwise END."""
+  """If there's an active cluster, decide: fast-path merge or full pipeline."""
   if state.get("cluster_id") == "DONE":
     return Command(goto=END)
+  
+  is_known = state.get("is_known_trend", False)
+  matched_id = state.get("matched_trend_id")
+  triage_flag = state.get("triage_flag", "unclear")
+  db_label = state.get("db_trend_label")
+
+  # Fast-path merge IF known trend AND triage doesn't contradict DB label
+  # Override: if triage says likely_harmful but DB says Low, force full pipeline
+  if is_known and matched_id:
+    contradicts = (
+      triage_flag == "likely_harmful" and db_label == "Low"
+    )
+    if not contradicts:
+      return Command(goto="merge_known")
+    else:
+      logger.info(
+        "ROUTE: known trend %s but triage=%s contradicts DB label=%s - forcing full pipeline",
+        matched_id, triage_flag, db_label,
+      )
+
   return Command(goto="research")
 
 def build_graph() -> StateGraph:
@@ -177,8 +291,9 @@ def build_graph() -> StateGraph:
   #  Nodes
   graph.add_node("observe", observe_node)
   graph.add_node("pop_cluster", pop_cluster_node)
+  graph.add_node("merge_known", merge_known_node)  # fast-path for known trends
   graph.add_node("research", research_node)
-  graph.add_node("assess", assess_node)  # deterministic formula — no LLM
+  graph.add_node("assess", assess_node)  # deterministic formula - no LLM
   graph.add_node("classify", classify_node)  # single-shot Terra high-effort
   graph.add_node("verify", verify_node)
   graph.add_node("report", report_node)  # short summary, GPT-4.1-mini
@@ -196,15 +311,16 @@ def build_graph() -> StateGraph:
   graph.add_edge("observe", "pop_cluster")
   graph.add_edge("pop_cluster", "pop_router")
   
-  # The core agentic loop. Notice the conditional routers (AssessRouter, 
-  # ClassifyRouter, VerifyRouter) — they can all force the graph backward to RESEARCH 
-  # if the evidence is weak or hallucinated, acting as strict guardrails.
+  # Fast-path: merge_known → back to pop_cluster
+  graph.add_edge("merge_known", "pop_cluster")
+
+  # Full agentic loop
   graph.add_edge("research", "assess")
   graph.add_edge("assess", "assess_router")
   graph.add_edge("classify", "classify_router")
   graph.add_edge("verify", "verify_router")
-  graph.add_edge("decide", "decide_router")  # New: DECIDE gates REPORT
-  graph.add_edge("report", "pop_cluster")    # REPORT loops back directly
+  graph.add_edge("decide", "decide_router")
+  graph.add_edge("report", "pop_cluster")
 
   return graph.compile()
 
@@ -214,27 +330,23 @@ def _write_run_summary(run_id: str, cluster_results: list[dict]) -> None:
   output_dir = get_run_dir(run_id, "final")
   output_dir.mkdir(parents=True, exist_ok=True)
 
-  labels = {"HARMFUL": 0, "CONCERNING": 0, "SAFE": 0}
-  needs_review = []
+  labels = {"HIGH": 0, "MODERATE": 0, "LOW": 0}
   for r in cluster_results:
     classification = r.get("classification", {})
-    lbl = classification.get("label", "CONCERNING")
+    lbl = classification.get("label", "MODERATE")
     labels[lbl] = labels.get(lbl, 0) + 1
-    flags = r.get("flags", {})
-    if isinstance(flags, dict) and flags.get("needs_human_review"):
-      needs_review.append(r.get("cluster_id", "unknown"))
 
   summary = {
     "run_id": run_id,
     "completed_at": datetime.now(UTC).isoformat(),
     "total_clusters": len(cluster_results),
     "labels": labels,
-    "needs_human_review": needs_review,
     "clusters": [
       {
         "cluster_id": r.get("cluster_id", "unknown"),
-        "label": r.get("classification", {}).get("label", "CONCERNING"),
+        "label": r.get("classification", {}).get("label", "MODERATE"),
         "risk_score": r.get("classification", {}).get("risk_score", 0.0),
+        "low_confidence": r.get("flags", {}).get("low_confidence", False),
       }
       for r in cluster_results
     ],

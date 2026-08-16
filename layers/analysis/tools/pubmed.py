@@ -1,8 +1,8 @@
-"""PubMed search tools — uses NCBI E-utilities (free, no key required for 3 req/s).
+"""PubMed search tools - uses NCBI E-utilities (free, no key required for 3 req/s).
 
 Two functions:
-- pubmed_search(query)           — esearch + efetch; returns list[EvidenceItem]
-- pubmed_fetch_by_pmid(pmid)     — efetch only; returns EvidenceItem | None
+- pubmed_search(query)           - esearch + efetch; returns list[EvidenceItem]
+- pubmed_fetch_by_pmid(pmid)     - efetch only; returns EvidenceItem | None
                                    Raises PMIDNotFoundError on confirmed absence.
 """
 
@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 import requests
 
-from layers.analysis.state import EvidenceItem
+from layers.analysis.core.state import EvidenceItem
 from layers.analysis.tools.retry import PMIDNotFoundError, with_retry
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ def _parse_articles(xml_text: str) -> list[EvidenceItem]:
 @with_retry()
 def pubmed_search(query: str, max_results: int = 5) -> list[EvidenceItem]:
   """Search PubMed via esearch → efetch pipeline.  Returns list[EvidenceItem]."""
-  # Step 1: esearch — get PMIDs
+  # Step 1: esearch - get PMIDs
   search_resp = requests.get(
     f"{_BASE}/esearch.fcgi",
     params={
@@ -84,7 +84,7 @@ def pubmed_search(query: str, max_results: int = 5) -> list[EvidenceItem]:
   if not id_list:
     return []
 
-  # Step 2: efetch — get abstracts
+  # Step 2: efetch - get abstracts
   fetch_resp = requests.get(
     f"{_BASE}/efetch.fcgi",
     params={
@@ -108,7 +108,7 @@ def pubmed_fetch_by_pmid(pmid: str) -> EvidenceItem | None:
     None only on retry-exhausted tool failure (network/timeout).
 
   Raises:
-    PMIDNotFoundError — if NCBI cleanly confirms the PMID doesn't exist.
+    PMIDNotFoundError - if NCBI cleanly confirms the PMID doesn't exist.
     This is a domain signal, not a tool error, and propagates through @with_retry.
   """
   resp = requests.get(
@@ -125,7 +125,7 @@ def pubmed_fetch_by_pmid(pmid: str) -> EvidenceItem | None:
 
   articles = _parse_articles(resp.text)
   if not articles:
-    # NCBI responded cleanly but returned no article — confirmed not found.
+    # NCBI responded cleanly but returned no article - confirmed not found.
     raise PMIDNotFoundError(f"PMID {pmid} does not exist in PubMed")
 
   return articles[0]
