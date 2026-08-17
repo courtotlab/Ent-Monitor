@@ -13,12 +13,18 @@ def _parse_ts(value: str | None) -> datetime | None:
     return None
   return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
-def fetch_active_anchors(sources: list[str] | None = None) -> list[tuple[str, list[float]]]:
+
+def fetch_active_anchors(sources: list[str] | None = None) -> list[tuple[int, str, list[float]]]:
+  """Fetch active SBERT anchors.
+
+  Returns a list of (anchor_id, anchor_text, embedding) triples.
+  anchor_id is used to track which anchor fired for each post.
+  """
   with get_connection() as conn, conn.cursor() as cur:
     if sources:
       cur.execute(
         """
-          SELECT anchor_text, embedding::text
+          SELECT anchor_id, anchor_text, embedding::text
           FROM sbert_anchors
           WHERE active = TRUE AND source = ANY(%s)
           ORDER BY anchor_id
@@ -28,14 +34,38 @@ def fetch_active_anchors(sources: list[str] | None = None) -> list[tuple[str, li
     else:
       cur.execute(
         """
-          SELECT anchor_text, embedding::text
+          SELECT anchor_id, anchor_text, embedding::text
           FROM sbert_anchors
           WHERE active = TRUE
           ORDER BY anchor_id
         """
       )
     rows = cur.fetchall()
-  return [(text, deserialize(emb)) for text, emb in rows]
+  return [(anchor_id, text, deserialize(emb)) for anchor_id, text, emb in rows]
+
+
+def increment_anchor_match_counts(anchor_ids: list[int]) -> None:
+  """Increment match_count for each anchor that pulled in at least one passing post this batch.
+
+  Takes a list of anchor IDs (may contain duplicates - one per matched post).
+  """
+  if not anchor_ids:
+    return
+  with get_connection() as conn, conn.cursor() as cur:
+    # Batch-update: count occurrences in Python, then UPDATE per anchor
+    counts: dict[int, int] = {}
+    for aid in anchor_ids:
+      if aid is not None:
+        counts[aid] = counts.get(aid, 0) + 1
+    for anchor_id, count in counts.items():
+      cur.execute(
+        """
+          UPDATE sbert_anchors
+          SET match_count = match_count + %s
+          WHERE anchor_id = %s
+        """,
+        (count, anchor_id),
+      )
 
 
 def upsert_creator(creator_id: str | None, platform: str) -> None:
@@ -52,7 +82,11 @@ def upsert_creator(creator_id: str | None, platform: str) -> None:
     )
 
 
-def insert_post(post: dict[str, Any], sbert_score: float | None = None) -> bool:
+def insert_post(
+  post: dict[str, Any],
+  sbert_score: float | None = None,
+  matched_anchor_id: int | None = None,
+) -> bool:
   """Insert post with ON CONFLICT DO NOTHING. Returns True if inserted."""
   engagement = post.get("engagement") or {}
   hashtags = post.get("hashtags")
@@ -72,12 +106,12 @@ def insert_post(post: dict[str, Any], sbert_score: float | None = None) -> bool:
           post_id, platform, source,
           creator_id, caption_text, transcript_text, hashtags, metadata,
           likes, comments, shares, views,
-          collected_at, posted_at, sbert_score
+          collected_at, posted_at, sbert_score, matched_anchor_id
         ) VALUES (
           %s, %s, %s,
           %s, %s, %s, %s, %s,
           %s, %s, %s, %s,
-          %s, %s, %s
+          %s, %s, %s, %s
         )
         ON CONFLICT (post_id, platform) DO NOTHING
         RETURNING post_id
@@ -98,6 +132,7 @@ def insert_post(post: dict[str, Any], sbert_score: float | None = None) -> bool:
         _parse_ts(post.get("collected_at")) or datetime.now(UTC),
         _parse_ts(post.get("posted_at")),
         sbert_score,
+        matched_anchor_id,
       ),
     )
     return cur.fetchone() is not None

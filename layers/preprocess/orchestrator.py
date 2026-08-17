@@ -7,7 +7,12 @@ from typing import Any
 from layers.shared.paths import get_results_dir
 
 from .filter import run_quality_filter
-from .queries import fetch_active_anchors, insert_post, update_sbert_score
+from .queries import (
+  fetch_active_anchors,
+  increment_anchor_match_counts,
+  insert_post,
+  update_sbert_score,
+)
 from .semantic_filter import SBERT_THRESHOLD, SbertFilter
 
 
@@ -63,18 +68,26 @@ def process_posts(
   quality = run_quality_filter(posts)
   stats.quality_passed = quality.stats.passed
 
+  # fetch_active_anchors now returns (anchor_id, text, embedding) triples
   anchors = fetch_active_anchors()
   sbert = SbertFilter()
   sbert.load_anchors(anchors)
 
+  # score_posts now returns (post, score, best_anchor_id) triples
   scored = sbert.score_posts(quality.survivors)
-  score_by_key = {(post["post_id"], post["platform"]): score for post, score in scored}
+  score_map: dict[tuple[str, str], tuple[float, int | None]] = {
+    (post["post_id"], post["platform"]): (score, anchor_id)
+    for post, score, anchor_id in scored
+  }
 
   filtered_posts = []
+  # Collect anchor_ids that fired for posts that PASSED the threshold,
+  # so we can batch-increment match_count once after the loop.
+  fired_anchor_ids: list[int] = []
 
   for post in quality.survivors:
     key = (post["post_id"], post["platform"])
-    score = score_by_key.get(key, 0.0)
+    score, matched_anchor_id = score_map.get(key, (0.0, None))
     source = post.get("source", "unknown")
 
     if source not in stats.by_source:
@@ -87,7 +100,7 @@ def process_posts(
     stats.by_source[source]["input"] += 1
     stats.by_source[source]["quality_passed"] += 1
 
-    inserted = insert_post(post, sbert_score=score)
+    inserted = insert_post(post, sbert_score=score, matched_anchor_id=matched_anchor_id)
     if inserted:
       stats.inserted += 1
       stats.by_source[source]["inserted"] += 1
@@ -99,12 +112,19 @@ def process_posts(
     if sbert.passes_threshold(score):
       stats.sbert_passed += 1
       stats.by_source[source]["sbert_passed"] += 1
+      # Track which anchor fired so we can credit match_count
+      if matched_anchor_id is not None:
+        fired_anchor_ids.append(matched_anchor_id)
       if inserted:
         post_with_score = dict(post)
         post_with_score["sbert_score"] = score
+        post_with_score["matched_anchor_id"] = matched_anchor_id
         filtered_posts.append(post_with_score)
     else:
       stats.sbert_failed += 1
+
+  # Batch-increment match_count for all anchors that fired this run
+  increment_anchor_match_counts(fired_anchor_ids)
 
   if filtered_path:
     filtered_path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,10 +132,6 @@ def process_posts(
       json.dump(filtered_posts, f, indent=2, ensure_ascii=False)
 
   _print_report(Path(source_name), stats, quality.stats)
-  
-  # if filtered_path:
-  #   print(f"\nSaved {len(filtered_posts)} filtered posts to {filtered_path}")
-    
   return stats
 
 
