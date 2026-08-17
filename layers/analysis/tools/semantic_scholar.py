@@ -49,7 +49,7 @@ def semantic_scholar_search(
       _CIRCUIT_OPEN = True
       return []
     raise e
-  except requests.exceptions.Timeout as e:
+  except requests.exceptions.Timeout:
     logger.warning("[CIRCUIT] Semantic Scholar timeout, opening circuit breaker for remainder of run")
     _CIRCUIT_OPEN = True
     return []

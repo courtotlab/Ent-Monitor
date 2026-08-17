@@ -10,12 +10,11 @@ A tool failure while checking does NOT - it's logged as tool_degraded.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 
 import requests
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
+from layers.analysis.utils.llm import invoke_llm
 from pydantic import BaseModel, Field
 
 from layers.analysis.core.state import AgentState, ToolError, VerifyFinding
@@ -26,12 +25,10 @@ logger = logging.getLogger(__name__)
 
 VERIFY_MODEL = "gpt-4.1"
 
-
 class VerifyResult(BaseModel):
   citation_relevant: bool = Field(description="Does each cited paper actually support the specific claim made? Require topical, population, and context match - not just thematic overlap.")
   label_consistent: bool = Field(description="Does the overall evidence justify the label?")
   notes: str = Field(description="explanation if anything is wrong")
-
 
 def verify_node(state: AgentState) -> dict:
   """VERIFY node - checks citations, then LLM evaluates relevance + consistency."""
@@ -160,11 +157,6 @@ def verify_node(state: AgentState) -> dict:
 
   if checkable or evidence:
     try:
-      llm = ChatOpenAI(
-        model=VERIFY_MODEL,
-        api_key=os.getenv("OPENAI_API_KEY"),
-        temperature=0,
-      ).with_structured_output(VerifyResult)
 
       checks_summary = "\n".join(
         f'- [{c["citation"].get("source", "?")}] "{c["citation"].get("title", "?")}"\n'
@@ -209,7 +201,11 @@ screening is NOT relevant to a school-age hearing screening post.
 evidence), is the assigned label justified?
 """
       messages = [HumanMessage(content=prompt)]
-      result: VerifyResult = llm.invoke(messages)
+      result: VerifyResult = invoke_llm(
+        model=VERIFY_MODEL,
+        messages=messages,
+        schema=VerifyResult,
+      )
       citation_relevant = result.citation_relevant
       label_consistent = result.label_consistent
       notes = result.notes

@@ -7,19 +7,19 @@ The LLM never clusters from scratch.  Math does the sorting; LLM validates inten
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Literal
-import torch
+
 import hdbscan
 import numpy as np
+import torch
 import umap
-from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+from layers.analysis.utils.llm import invoke_llm
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
-from layers.analysis.db.queries import check_if_trend_exists, find_nearest_trend
 from layers.analysis.core.state import AgentState
+from layers.analysis.db.queries import check_if_trend_exists, find_nearest_trend
 from layers.shared.posts import get_engagement
 from layers.shared.trends import make_trend_id
 
@@ -40,7 +40,6 @@ SBERT_MODEL_NAME = "all-MiniLM-L6-v2"
 # LLM for cluster validation
 OBSERVE_MODEL = "gpt-4.1-mini"
 
-
 #  Prompt injection hardening ()
 def sanitize_post_text(text: str, max_chars: int = 500) -> str:
   """Escape tag-like sequences and cap length before XML-wrapping."""
@@ -58,26 +57,7 @@ def get_canonical_caption(posts: list[dict]) -> str:
     return "unknown_behavior"
   return Counter(captions).most_common(1)[0][0]
 
-
-INJECTION_PATTERNS = [
-  "ignore previous",
-  "ignore all",
-  "system:",
-  "assistant:",
-  "new instructions",
-  "disregard",
-  "you are now",
-]
-
-
-def check_output_for_injection(text: str, cluster_id: str) -> bool:
-  """Best-effort heuristic to catch lazy injections. Real defense is XML-escaping + system-prompt."""
-  lower = text.lower()
-  if any(p in lower for p in INJECTION_PATTERNS):
-    logger.warning("[SECURITY] Possible injection in output for %s", cluster_id)
-    return True
-  return False
-
+from layers.analysis.utils.security import check_output_for_injection
 
 #  XML wrapping
 def _wrap_post_xml(post: dict, cluster_label: int | str, centroid_sim: float) -> str:
@@ -96,7 +76,6 @@ def _wrap_post_xml(post: dict, cluster_label: int | str, centroid_sim: float) ->
   }
   attr_str = " ".join(f'{k}="{v}"' for k, v in attrs.items())
   return f"<post {attr_str}>\n  {text}\n</post>"
-
 
 #  Embedding + clustering pipeline
 def _cluster_posts(
@@ -144,7 +123,6 @@ def _cluster_posts(
 
   return embeddings, umap_embeddings, labels
 
-
 def _compute_centroids(
   embeddings: np.ndarray,
   labels: np.ndarray,
@@ -162,7 +140,6 @@ def _compute_centroids(
       centroid = centroid / norm
     centroids[lbl] = centroid
   return centroids
-
 
 def _misclassification_check(
   embeddings: np.ndarray,
@@ -219,7 +196,6 @@ def _misclassification_check(
       )
 
   return labels
-
 
 def _merge_similar_clusters(
   embeddings: np.ndarray,
@@ -286,7 +262,6 @@ def _merge_similar_clusters(
 
   return labels, centroids
 
-
 #  LLM validation calls
 _SYSTEM_PROMPT = """\
 You are a clustering validation assistant for a pediatric ENT health trend \
@@ -334,7 +309,6 @@ meaning (not keyword match)?
 (c) The rest stay UNCLASSIFIED.
 """
 
-
 class ClusterValidation(BaseModel):
   confirmed: bool
   cluster_name: str
@@ -356,8 +330,6 @@ class UnclassifiedValidation(BaseModel):
   attach: list[Attachment]
   new_groups: list[NewGroup]
   still_unclassified: list[str]
-
-
 
 def _match_clusters_to_db_trends(validated_clusters: list[dict[str, Any]]) -> list[dict[str, Any]]:
   """Match clusters to existing DB trends using pgvector HNSW KNN (one indexed query per cluster)."""
@@ -389,16 +361,13 @@ def _match_clusters_to_db_trends(validated_clusters: list[dict[str, Any]]) -> li
 
   return validated_clusters
 
-
 def _validate_clusters(messages: list, schema) -> Any:
   """Call gpt-4.1-mini to validate the math-based clusters using structured output."""
-  llm = ChatOpenAI(
+  return invoke_llm(
     model=OBSERVE_MODEL,
-    api_key=os.getenv("OPENAI_API_KEY"),
-    temperature=0,
-  ).with_structured_output(schema)
-  return llm.invoke(messages)
-
+    messages=messages,
+    schema=schema,
+  )
 
 #  Main node function
 def observe_node(state: AgentState) -> dict:
@@ -581,8 +550,17 @@ def observe_node(state: AgentState) -> dict:
     # Process new groups from unclassified
     for ng in unc_result.get("new_groups", []):
       ng_post_ids = set(ng.get("post_ids", []))
-      ng_posts = [p for _, p in noise_posts if p.get("post_id") in ng_post_ids]
-      if ng_posts:
+      ng_posts_info = [(i, p) for i, p in noise_posts if p.get("post_id") in ng_post_ids]
+      if ng_posts_info:
+        ng_posts = [p for _, p in ng_posts_info]
+        ng_indices = [i for i, _ in ng_posts_info]
+        
+        ng_centroid = embeddings[ng_indices].mean(axis=0)
+        norm = np.linalg.norm(ng_centroid)
+        if norm > 0:
+            ng_centroid = ng_centroid / norm
+        ng_centroid = ng_centroid.tolist()
+        
         new_id = f"cluster_new_{len(validated_clusters)}"
         validated_clusters.append(
           {
@@ -592,7 +570,7 @@ def observe_node(state: AgentState) -> dict:
             "search_context": ng.get("search_context", ""),
             "triage_flag": ng.get("triage_flag", "unclear"),
             "is_known_trend": check_if_trend_exists(ng.get("cluster_name", new_id)),
-            "centroid": [],
+            "centroid": ng_centroid,
             "cluster_name": ng.get("cluster_name", new_id),
             "deterministic_trend_id": make_trend_id(get_canonical_caption(ng_posts)),
           }

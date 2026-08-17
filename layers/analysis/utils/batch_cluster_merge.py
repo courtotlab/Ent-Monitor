@@ -1,12 +1,10 @@
-import json
 import logging
-from typing import Any
 
 import numpy as np
-from scipy.spatial.distance import cdist
+from langchain_core.messages import HumanMessage, SystemMessage
+from layers.analysis.utils.llm import invoke_llm
 from pydantic import BaseModel, Field
-from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import ChatOpenAI
+from scipy.spatial.distance import cdist
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +114,15 @@ def execute_batch_cluster_merge(clusters: list[dict], llm_model: str = "gpt-4o-m
     prompt_text = payload.model_dump_json(indent=2)
     
     # Call LLM
-    llm = ChatOpenAI(model=llm_model, temperature=0.0).with_structured_output(BatchMergeResponse)
-    
     try:
-        response: BatchMergeResponse = llm.invoke([
-            SystemMessage(content=_SYSTEM_PROMPT),
-            HumanMessage(content=prompt_text)
-        ])
+        response: BatchMergeResponse = invoke_llm(
+            model=llm_model,
+            messages=[
+                SystemMessage(content=_SYSTEM_PROMPT),
+                HumanMessage(content=prompt_text)
+            ],
+            schema=BatchMergeResponse,
+        )
         merges = response.merges
     except Exception as e:
         logger.error("LLM batch merge failed: %s", e)

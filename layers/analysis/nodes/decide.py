@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from layers.analysis.core.state import AgentState
-from layers.analysis.db.queries import write_safe_posts_to_db, write_cluster_to_db
+from layers.analysis.db.queries import write_cluster_to_db, write_safe_posts_to_db
 from layers.shared.paths import get_run_dir
 from layers.shared.posts import get_engagement
 
@@ -50,23 +50,48 @@ def decide_node(state: AgentState) -> dict:
         "run_id": state.get("run_id"),
         "cluster_id": cluster_id,
         "trend": {
-            "trend_name": state.get("search_context") or cluster_id,
-            "is_known_trend": state.get("is_known_trend", False),
-            "matched_trend_id": state.get("matched_trend_id"),
-            "post_count": len(posts),
-            "platforms": list(set(p.get("platform", "unknown") for p in posts)),
+          "trend_name": state.get("search_context") or cluster_id,
+          "is_known_trend": state.get("is_known_trend", False),
+          "matched_trend_id": state.get("matched_trend_id"),
+          "post_count": len(posts),
+          "platforms": list(set(p.get("platform", "unknown") for p in posts)),
         },
         "classification": {
-            "label": label,
-            "lifecycle": state.get("lifecycle", "Isolated incident"),
-            "verification": state.get("verification", "PROVISIONAL"),
-            "risk_score": state.get("risk_score", 0.0),
+          "label": label,
+          "lifecycle": state.get("lifecycle", "Isolated incident"),
+          "verification": state.get("verification", "PROVISIONAL"),
+          "risk_score": state.get("risk_score", 0.0),
         },
         "posts": posts,
-        "centroid": state.get("centroid", []),
         "search_context": state.get("search_context", ""),
+        "reasoning": {
+          "why_this_label": state.get("reasoning", ""),
+        },
+        "evidence": [
+          {
+            "source": e["source"],
+            "pmid": e.get("pmid"),
+            "title": e["title"],
+            "url": e["url"],
+            "relevance_note": e.get("snippet", "")[:150],
+            "is_relevant": e.get("is_relevant", False),
+            "contradicts_harm": e.get("contradicts_harm", False),
+          }
+          for e in state.get("evidence", [])
+        ],
       }
-      write_cluster_to_db(minimal_cluster_json)
+      write_cluster_to_db(minimal_cluster_json, centroid=state.get("centroid"))
+      
+      # Also save as a standalone JSON file for manual review
+      import json
+
+      from layers.shared.paths import get_run_dir
+      output_dir = get_run_dir(state.get("run_id"), "final")
+      output_dir.mkdir(parents=True, exist_ok=True)
+      output_path = output_dir / f"{cluster_id}_low.json"
+      
+      with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(minimal_cluster_json, f, indent=2, ensure_ascii=False)
     except Exception as exc:
       logger.warning("DECIDE: failed to write LOW posts/cluster to DB - %s", exc)
       
@@ -115,7 +140,7 @@ def _log_skipped_low(state: AgentState) -> None:
         "likes": get_engagement(p, "likes"),
         "views": get_engagement(p, "views"),
       }
-      for p in state.get("posts", [])[:20]
+      for p in state.get("posts", [])
     ],
   }
 

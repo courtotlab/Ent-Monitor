@@ -10,12 +10,10 @@ chooses which tools to run. Source tier tagging is applied after gathering.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
-from typing import Any, Literal
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import ChatOpenAI
+from layers.analysis.utils.llm import invoke_llm
 from pydantic import BaseModel, Field
 
 from layers.analysis.core.state import AgentState, EvidenceItem, ToolError
@@ -67,7 +65,6 @@ Current evidence count: {evidence_count}
 {known_trend_context}
 """
 
-
 class ResearchQuery(BaseModel):
   harm_hypothesis: str = Field(description="The underlying clinical harm mechanism in medical terms.")
   query: str = Field(description="Search query derived from harm_hypothesis, using medical/clinical terminology")
@@ -75,7 +72,6 @@ class ResearchQuery(BaseModel):
 
 class ResearchDecision(BaseModel):
   queries: list[ResearchQuery] = Field(description="List of queries. Provide one for EACH plausible harm mechanism (up to 2).")
-
 
 class RelevanceTag(BaseModel):
   index: int
@@ -85,12 +81,10 @@ class RelevanceTag(BaseModel):
 class RelevanceTags(BaseModel):
   tags: list[RelevanceTag]
 
-
 def _tag_source_tier(item: EvidenceItem) -> EvidenceItem:
   """Tag each evidence item with its source tier."""
   item["source_tier"] = "clinical" if item.get("source") in CLINICAL_SOURCES else "web_only"
   return item
-
 
 def research_node(state: AgentState) -> dict:
   """RESEARCH node - gathers evidence via fixed tool cascade.
@@ -122,11 +116,6 @@ def research_node(state: AgentState) -> dict:
     queries_to_run.append({"query": query, "harm_hypothesis": harm_hypothesis})
   else:
     try:
-      llm = ChatOpenAI(
-        model=RESEARCH_MODEL,
-        api_key=os.getenv("OPENAI_API_KEY"),
-        temperature=0,
-      ).with_structured_output(ResearchDecision)
 
       known_trend_context = ""
       if state.get("is_known_trend") and state.get("matched_trend_id"):
@@ -146,7 +135,11 @@ def research_node(state: AgentState) -> dict:
         SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=prompt_text)
       ]
-      result: ResearchDecision = llm.invoke(messages)
+      result: ResearchDecision = invoke_llm(
+        model=RESEARCH_MODEL,
+        messages=messages,
+        schema=ResearchDecision,
+      )
       for rq in result.queries[:2]:
         queries_to_run.append({"query": rq.query, "harm_hypothesis": rq.harm_hypothesis})
       if not harm_hypothesis and result.queries:
@@ -264,7 +257,6 @@ def research_node(state: AgentState) -> dict:
     "harm_hypothesis": harm_hypothesis,
   }
 
-
 def _tag_relevance(
   items: list[EvidenceItem],
   search_context: str,
@@ -275,11 +267,6 @@ def _tag_relevance(
     return items
 
   try:
-    llm = ChatOpenAI(
-      model=RESEARCH_MODEL,
-      api_key=os.getenv("OPENAI_API_KEY"),
-      temperature=0,
-    ).with_structured_output(RelevanceTags)
 
     evidence_summary = "\n".join(
       f"[{i}] {item['title']}\n    Source: {item['source']} (tier: {item.get('source_tier', 'unknown')})\n    {item['snippet'][:800]}"
@@ -307,7 +294,11 @@ Evidence items:
 {evidence_summary}
 """
     messages = [HumanMessage(content=prompt_text)]
-    result: RelevanceTags = llm.invoke(messages)
+    result: RelevanceTags = invoke_llm(
+      model=RESEARCH_MODEL,
+      messages=messages,
+      schema=RelevanceTags,
+    )
 
     for tag in result.tags:
       idx = tag.index

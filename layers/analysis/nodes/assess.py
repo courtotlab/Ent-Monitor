@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from layers.analysis.core.routing import compute_evidence_score, EVIDENCE_THRESHOLD
+from layers.analysis.core.routing import EVIDENCE_THRESHOLD, compute_evidence_score
 from layers.analysis.core.state import AgentState
 
 logger = logging.getLogger(__name__)

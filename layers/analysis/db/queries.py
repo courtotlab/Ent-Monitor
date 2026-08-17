@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from psycopg2.extras import Json
 
@@ -20,7 +20,7 @@ def check_if_trend_exists(trend_id: str) -> bool:
       cur.execute("SELECT 1 FROM trends WHERE trend_id = %s", (trend_id,))
       return cur.fetchone() is not None
   except Exception as exc:
-    logger.warning("Database unavailable (%s) â€” defaulting is_known_trend to False", exc)
+    logger.warning("Database unavailable (%s) defaulting is_known_trend to False", exc)
     return False
 
 
@@ -33,7 +33,7 @@ def fetch_unprocessed_posts(threshold: float = 0.38) -> list[dict]:
                likes, views, posted_at, matched_anchor_id
         FROM posts
         WHERE sbert_score >= %s
-        AND gate4_relevant IS NULL
+        AND gate4_category IS NULL
       """,
       (threshold,),
     )
@@ -79,7 +79,6 @@ def find_nearest_trend(centroid: list[float], threshold: float = 0.78) -> dict |
                  1 - (centroid <=> %s::vector) AS similarity
           FROM trends
           WHERE centroid IS NOT NULL
-            AND false_positive = FALSE
             AND (centroid <=> %s::vector) < %s
           ORDER BY centroid <=> %s::vector
           LIMIT 1
@@ -102,7 +101,7 @@ def find_nearest_trend(centroid: list[float], threshold: float = 0.78) -> dict |
         "similarity": row[8],
       }
   except Exception as exc:
-    logger.warning("DB: pgvector KNN query failed â€” %s", exc)
+    logger.warning("DB: pgvector KNN query failed - %s", exc)
     return None
 
 
@@ -122,7 +121,7 @@ def create_agent_run(run_id: str, posts_input: int) -> None:
       )
     logger.info("DB: created agent_run %s (posts_input=%d)", run_id, posts_input)
   except Exception as exc:
-    logger.warning("DB: failed to create agent_run %s â€” %s", run_id, exc)
+    logger.warning("DB: failed to create agent_run %s - %s", run_id, exc)
 
 
 def complete_agent_run(
@@ -167,21 +166,21 @@ def complete_agent_run(
           run_id,
         ),
       )
-    logger.info("DB: completed agent_run %s â€” status=%s, clusters=%d", run_id, status, len(cluster_results))
+    logger.info("DB: completed agent_run %s - status=%s, clusters=%d", run_id, status, len(cluster_results))
   except Exception as exc:
-    logger.warning("DB: failed to complete agent_run %s â€” %s", run_id, exc)
+    logger.warning("DB: failed to complete agent_run %s - %s", run_id, exc)
 
 
 # Cluster DB persistence (HARMFUL / CONCERNING clusters)
 
-def write_cluster_to_db(cluster_json: dict) -> None:
+def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None) -> None:
   """Persist the cluster classification into trends and posts tables.
 
   Handles both new trend discovery and merging into existing trends:
   - UPSERT into trends (increment post_count, take max risk_score, merge platforms)
   - Store/update centroid and search_context for cross-run matching
   - Log lifecycle event (discovery for new, post_update for existing)
-  - Update posts with gate4_relevant, gate4_category, linked_trend_id
+  - Update posts with gate4_category, linked_trend_id
   - If a post was previously linked to a different trend, decrement that trend's post_count
   - Check for Resurfacing (>14 day gap since last_seen_at)
   """
@@ -205,10 +204,7 @@ def write_cluster_to_db(cluster_json: dict) -> None:
   platforms = trend_data.get("platforms", [])
 
   posts = cluster_json.get("posts", [])
-  centroid = cluster_json.get("centroid")
   search_context = cluster_json.get("search_context", "")
-
-  gate4_relevant = label in ("HIGH", "MODERATE")
 
   centroid_str = None
   if centroid and isinstance(centroid, (list, tuple)) and len(centroid) > 0:
@@ -255,9 +251,10 @@ def write_cluster_to_db(cluster_json: dict) -> None:
           INSERT INTO trends
             (trend_id, label, risk_score, post_count, platforms, slang_terms,
              verification_status, lifecycle_status, first_detected_at, last_seen_at,
-             search_context, centroid, velocity_next_check_at)
+             search_context, centroid, velocity_next_check_at, lifecycle_history)
           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector,
-                  NOW() + INTERVAL '24 hours')
+                  NOW() + INTERVAL '24 hours',
+                  jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', %s)))
           ON CONFLICT (trend_id) DO UPDATE SET
             post_count          = trends.post_count + EXCLUDED.post_count,
             risk_score          = GREATEST(trends.risk_score, EXCLUDED.risk_score),
@@ -266,8 +263,10 @@ def write_cluster_to_db(cluster_json: dict) -> None:
                                     WHEN EXCLUDED.label = 'MODERATE' AND trends.label != 'HIGH' THEN 'MODERATE'
                                     ELSE trends.label
                                   END,
-            lifecycle_status    = EXCLUDED.lifecycle_status,
             verification_status = EXCLUDED.verification_status,
+            lifecycle_status    = EXCLUDED.lifecycle_status,
+            lifecycle_history   = COALESCE(trends.lifecycle_history, '[]'::jsonb) || 
+                                  jsonb_build_array(jsonb_build_object('date', NOW(), 'status', EXCLUDED.lifecycle_status, 'post_count', trends.post_count + EXCLUDED.post_count)),
             platforms           = (
                                     SELECT COALESCE(jsonb_agg(DISTINCT elem), '[]'::jsonb)
                                     FROM (
@@ -290,36 +289,12 @@ def write_cluster_to_db(cluster_json: dict) -> None:
         """,
         (trend_id, label, risk_score, post_count, Json(platforms), Json(slang_terms),
          verification, lifecycle,
-         now, now, search_context or None, centroid_str),
+         now, now, search_context or None, centroid_str,
+         lifecycle, post_count),
       )
 
-      # 3. Log lifecycle event
-      if is_new_trend:
-        event_type = "discovery"
-        notes = f"Trend '{trend_name}' discovered and classified as {label}"
-      elif lifecycle == "Resurfacing":
-        event_type = "lifecycle_change"
-        notes = f"Trend '{trend_name}' resurfacing after >14 day gap, merged {post_count} new posts"
-      else:
-        event_type = "post_update"
-        notes = f"Merged {post_count} new posts into trend '{trend_name}' (label: {label})"
 
-      cur.execute(
-        """
-          INSERT INTO trend_lifecycle_history
-            (trend_id, event_type, to_status, post_count_at_event, triggered_by, notes)
-          VALUES (%s, %s, %s, %s, 'analysis_agent', %s)
-        """,
-        (
-          trend_id,
-          event_type,
-          lifecycle if (is_new_trend or lifecycle == "Resurfacing") else None,
-          post_count,
-          notes,
-        ),
-      )
-
-      # 4. Update posts â€” handle re-assignment from old trends
+      # 4. Update posts - handle re-assignment from old trends
       for p in posts:
         p_id = p.get("post_id")
         p_platform = p.get("platform")
@@ -340,23 +315,22 @@ def write_cluster_to_db(cluster_json: dict) -> None:
         cur.execute(
           """
             UPDATE posts
-            SET gate4_relevant  = %s,
-                gate4_category  = %s,
+            SET gate4_category  = %s,
                 linked_trend_id = %s
             WHERE post_id = %s AND platform = %s
           """,
-          (gate4_relevant, label, trend_id, p_id, p_platform),
+          (label, trend_id, p_id, p_platform),
         )
 
-      # 5. Check burst â†’ trigger velocity tracking
+      # 5. Check burst -> trigger velocity tracking
       _maybe_trigger_velocity(cur, trend_id)
 
     logger.info(
-      "DB: wrote cluster â†’ trend %s (%s, %s) â€” %d posts, is_new=%s",
+      "DB: wrote cluster -> trend %s (%s, %s) - %d posts, is_new=%s",
       trend_id, trend_name, label, len(posts), is_new_trend,
     )
   except Exception as exc:
-    logger.error("DB: failed to write cluster to DB â€” %s", exc)
+    logger.error("DB: failed to write cluster to DB - %s", exc)
 
 
 def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[float] | None = None) -> dict | None:
@@ -367,9 +341,9 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
   - Weighted-average the centroid
   - Update last_seen_at
   - Log 'post_update' in trend_lifecycle_history
-  - Update each post's gate4_relevant, gate4_category, linked_trend_id
+  - Update each post's gate4_category, linked_trend_id
   - Check for Resurfacing (last_seen > 14 days ago)
-  - Check burst â†’ trigger velocity tracking
+  - Check burst -> trigger velocity tracking
   - Returns the updated trend dict
   """
   now = datetime.now(UTC)
@@ -390,14 +364,12 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
       )
       row = cur.fetchone()
       if row is None:
-        logger.warning("DB: merge_posts_into_trend â€” trend %s not found", trend_id)
+        logger.warning("DB: merge_posts_into_trend - trend %s not found", trend_id)
         return None
 
       label, risk_score, existing_post_count, existing_platforms, centroid_text, last_seen, lifecycle, verification = row
 
-      gate4_relevant = label in ("HIGH", "MODERATE")
-
-      # Resurfacing detection
+          # Resurfacing detection
       new_lifecycle = lifecycle
       if last_seen:
         days_since_last = (now - last_seen).days
@@ -432,9 +404,13 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
       ]
       update_vals = [new_post_count, now, Json(merged_platforms)]
 
+
       if new_lifecycle != lifecycle:
         update_parts.append("lifecycle_status = %s")
         update_vals.append(new_lifecycle)
+        
+      update_parts.append("lifecycle_history = COALESCE(lifecycle_history, '[]'::jsonb) || jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', post_count + %s))")
+      update_vals.extend([new_lifecycle, new_post_count])
 
       if centroid_str:
         update_parts.append("centroid = %s::vector")
@@ -447,28 +423,6 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
         tuple(update_vals),
       )
 
-      # Log lifecycle event
-      event_type = "lifecycle_change" if new_lifecycle != lifecycle else "post_update"
-      notes = (
-        f"Resurfacing: merged {new_post_count} new posts after >14 day gap"
-        if new_lifecycle == "Resurfacing" and new_lifecycle != lifecycle
-        else f"Fast-path merged {new_post_count} new posts"
-      )
-
-      cur.execute(
-        """
-          INSERT INTO trend_lifecycle_history
-            (trend_id, event_type, to_status, post_count_at_event, triggered_by, notes)
-          VALUES (%s, %s, %s, %s, 'analysis_agent', %s)
-        """,
-        (
-          trend_id,
-          event_type,
-          new_lifecycle if event_type == "lifecycle_change" else None,
-          existing_post_count + new_post_count,
-          notes,
-        ),
-      )
 
       # Update each post
       for p in posts:
@@ -492,15 +446,14 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
         cur.execute(
           """
             UPDATE posts
-            SET gate4_relevant  = %s,
-                gate4_category  = %s,
+            SET gate4_category  = %s,
                 linked_trend_id = %s
             WHERE post_id = %s AND platform = %s
           """,
-          (gate4_relevant, label, trend_id, p_id, p_platform),
+          (label, trend_id, p_id, p_platform),
         )
 
-      # Check burst â†’ trigger velocity tracking
+      # Check burst -> trigger velocity tracking
       _maybe_trigger_velocity(cur, trend_id)
 
     logger.info("DB: fast-path merged %d posts into trend %s", new_post_count, trend_id)
@@ -513,7 +466,7 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
       "verification_status": verification,
     }
   except Exception as exc:
-    logger.error("DB: fast-path merge failed for trend %s â€” %s", trend_id, exc)
+    logger.error("DB: fast-path merge failed for trend %s - %s", trend_id, exc)
     return None
 
 
@@ -553,7 +506,6 @@ def fetch_trends_due_for_velocity() -> list[dict]:
                  lifecycle_status, post_count
           FROM trends
           WHERE velocity_next_check_at <= NOW()
-            AND false_positive = FALSE
         """
       )
       rows = cur.fetchall()
@@ -568,7 +520,7 @@ def fetch_trends_due_for_velocity() -> list[dict]:
         for row in rows
       ]
   except Exception as exc:
-    logger.warning("DB: failed to fetch velocity-due trends â€” %s", exc)
+    logger.warning("DB: failed to fetch velocity-due trends - %s", exc)
     return []
 
 
@@ -587,7 +539,7 @@ def fetch_posts_last_12h(trend_id: str) -> list[datetime]:
       )
       return [row[0] for row in cur.fetchall()]
   except Exception as exc:
-    logger.warning("DB: failed to fetch 12h posts for %s â€” %s", trend_id, exc)
+    logger.warning("DB: failed to fetch 12h posts for %s - %s", trend_id, exc)
     return []
 
 
@@ -604,48 +556,35 @@ def update_trend_velocity(
         cur.execute(
           """
             UPDATE trends
-            SET velocity_growth_rate   = %s,
-                velocity_checked_at    = NOW(),
+            SET velocity_growth_rate = %s,
+                velocity_checked_at = NOW(),
                 velocity_next_check_at = NOW() + make_interval(hours => %s),
-                lifecycle_status       = %s
+                lifecycle_status = %s,
+                lifecycle_history = COALESCE(lifecycle_history, '[]'::jsonb) || jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', post_count))
             WHERE trend_id = %s
           """,
-          (growth_rate, next_check_hours, new_lifecycle, trend_id),
-        )
-        # Log lifecycle transition
-        cur.execute(
-          """
-            INSERT INTO trend_lifecycle_history
-              (trend_id, event_type, to_status, triggered_by, notes)
-            VALUES (%s, 'lifecycle_change', %s, 'velocity_worker',
-                    %s)
-          """,
-          (
-            trend_id,
-            new_lifecycle,
-            f"Velocity worker: growth_rate={growth_rate:.3f}, transitioning to {new_lifecycle}",
-          ),
+          (growth_rate, next_check_hours, new_lifecycle, new_lifecycle, trend_id),
         )
       else:
         cur.execute(
           """
             UPDATE trends
-            SET velocity_growth_rate   = %s,
-                velocity_checked_at    = NOW(),
+            SET velocity_growth_rate = %s,
+                velocity_checked_at = NOW(),
                 velocity_next_check_at = NOW() + make_interval(hours => %s)
             WHERE trend_id = %s
           """,
           (growth_rate, next_check_hours, trend_id),
         )
-    logger.info("DB: velocity updated for %s â€” rate=%.3f, lifecycle=%s", trend_id, growth_rate, new_lifecycle)
+    logger.info("DB: velocity updated for %s - rate=%.3f, lifecycle=%s", trend_id, growth_rate, new_lifecycle)
   except Exception as exc:
-    logger.warning("DB: failed to update velocity for %s â€” %s", trend_id, exc)
+    logger.warning("DB: failed to update velocity for %s - %s", trend_id, exc)
 
 
 # SAFE cluster post updates (no trends row needed)
 
 def write_safe_posts_to_db(posts: list[dict]) -> None:
-  """Mark posts from SAFE clusters as gate4_relevant=FALSE in the database."""
+  """Mark posts from SAFE clusters as gate4_category='LOW' in the database."""
   if not posts:
     return
 
@@ -660,13 +599,13 @@ def write_safe_posts_to_db(posts: list[dict]) -> None:
         cur.execute(
           """
             UPDATE posts
-            SET gate4_relevant  = FALSE,
-                gate4_category  = 'LOW'
+            SET gate4_relevant = FALSE,
+                gate4_category = 'LOW'
             WHERE post_id = %s AND platform = %s
-              AND gate4_relevant IS NULL
+              AND gate4_category IS NULL
           """,
           (p_id, p_platform),
         )
     logger.info("DB: marked %d posts as SAFE", len(posts))
   except Exception as exc:
-    logger.warning("DB: failed to mark SAFE posts â€” %s", exc)
+    logger.warning("DB: failed to mark SAFE posts - %s", exc)

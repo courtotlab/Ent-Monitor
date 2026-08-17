@@ -1,4 +1,4 @@
-"""REPORT node â€” short structured summary + final JSON output.
+"""REPORT node short structured summary + final JSON output.
 
 GPT-4.1-mini at low effort.  Only runs for clusters that cleared the
 decide_router threshold (HARMFUL / CONCERNING / risk >= 0.5 / no_evidence).
@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import UTC, datetime
 
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
+from layers.analysis.utils.llm import invoke_llm
 from pydantic import BaseModel, Field
 
 from layers.analysis.core.state import AgentState
@@ -25,7 +24,6 @@ from layers.shared.posts import get_engagement
 logger = logging.getLogger(__name__)
 
 REPORT_MODEL = "gpt-4.1-mini"
-
 
 _PROMPT = """\
 You are generating a short structured summary for a pediatric ENT health trend \
@@ -60,9 +58,8 @@ class ReportSummary(BaseModel):
   post_count: int
   platforms: list[str]
 
-
 def report_node(state: AgentState) -> dict:
-  """REPORT node â€” generates summary, writes full JSON, appends to cluster_results.
+  """REPORT node generates summary, writes full JSON, appends to cluster_results.
 
   Only called for clusters that crossed the dashboard threshold in decide_router.
   """
@@ -120,24 +117,18 @@ def report_node(state: AgentState) -> dict:
 
   #  LLM call
   try:
-    llm = ChatOpenAI(
-      model=REPORT_MODEL,
-      api_key=os.getenv("OPENAI_API_KEY"),
-      temperature=0,
-    ).with_structured_output(ReportSummary)
-    
     messages = [HumanMessage(content=prompt)]
-    result_obj: ReportSummary = llm.invoke(messages)
+    result_obj: ReportSummary = invoke_llm(model=REPORT_MODEL, messages=messages, schema=ReportSummary)
     report = result_obj.model_dump()
   except Exception as exc:
-    logger.warning("REPORT LLM failed: %s â€” generating minimal report", exc)
+    logger.warning("REPORT LLM failed: %s generating minimal report", exc)
     report = {
       "cluster_id": cluster_id,
       "label": label,
       "risk_score": risk_score,
       "trend_name": state.get("search_context", "Unknown trend"),
       "summary": f"Classification: {label} with confidence {confidence:.2f}",
-      "harm_mechanism": "Unable to generate â€” LLM error",
+      "harm_mechanism": "Unable to generate LLM error",
       "key_evidence": [],
       "confidence": confidence,
       "evidence_status": evidence_status,
@@ -182,7 +173,6 @@ def report_node(state: AgentState) -> dict:
       "post_count": len(posts),
       "platforms": platforms,
     },
-    "centroid": state.get("centroid", []),
     "posts": [
       {
         "post_id": p.get("post_id", ""),
@@ -192,7 +182,7 @@ def report_node(state: AgentState) -> dict:
         "likes": get_engagement(p, "likes"),
         "views": get_engagement(p, "views"),
       }
-      for p in posts[:20]
+      for p in posts
     ],
     "evidence": [
       {
@@ -220,7 +210,7 @@ def report_node(state: AgentState) -> dict:
     },
     "flags": {
       "needs_human_review": needs_human_review,
-      "rising_non_trend": False,  # RESERVED UNUSED FIELD - TODO: Âvelocity monitoring integration
+      "rising_non_trend": False,  # RESERVED UNUSED FIELD - TODO: velocity monitoring integration
       "no_literature_found": no_evidence,
       "downgraded_from_harmful": downgraded,
       "tool_degraded": tool_degraded,
@@ -247,9 +237,9 @@ def report_node(state: AgentState) -> dict:
 
   #  Persist to database (trends + posts tables)
   try:
-    write_cluster_to_db(cluster_json)
+    write_cluster_to_db(cluster_json, centroid=state.get("centroid"))
   except Exception as exc:
-    logger.warning("REPORT: DB write failed for %s â€” %s (local JSON saved)", cluster_id, exc)
+    logger.warning("REPORT: DB write failed for %s %s (local JSON saved)", cluster_id, exc)
 
   current_results = list(state.get("cluster_results", []))
   current_results.append(cluster_json)

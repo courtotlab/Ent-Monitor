@@ -9,20 +9,11 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 
 from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command
 
-from layers.analysis.nodes.assess import assess_node
-from layers.analysis.nodes.classify import classify_node
-from layers.analysis.nodes.decide import decide_node
-from layers.analysis.nodes.observe import observe_node
-from layers.analysis.nodes.report import report_node
-from layers.analysis.db.queries import create_agent_run, complete_agent_run, merge_posts_into_trend
-from layers.analysis.nodes.research import research_node
-from layers.analysis.nodes.verify import verify_node
 from layers.analysis.core.routing import (
   route_after_assess,
   route_after_classify,
@@ -30,9 +21,21 @@ from layers.analysis.core.routing import (
   route_after_verify,
 )
 from layers.analysis.core.state import AgentState
-from layers.shared.paths import get_run_dir
+from layers.analysis.db.queries import (
+  complete_agent_run,
+  create_agent_run,
+  merge_posts_into_trend,
+)
+from layers.analysis.nodes.assess import assess_node
+from layers.analysis.nodes.classify import classify_node
+from layers.analysis.nodes.decide import decide_node
+from layers.analysis.nodes.observe import observe_node
+from layers.analysis.nodes.report import report_node
+from layers.analysis.nodes.research import research_node
+from layers.analysis.nodes.verify import verify_node
 from layers.analysis.tools.duckduckgo import set_circuit_breaker
 from layers.analysis.tools.retry import DuckDuckGoCircuitBreaker
+from layers.shared.paths import get_run_dir
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -178,7 +181,7 @@ def merge_known_node(state: AgentState) -> dict:
         "likes": p.get("likes", 0),
         "views": p.get("views", 0),
       }
-      for p in posts[:20]
+      for p in posts
     ],
     "evidence": [],
     "reasoning": {

@@ -8,16 +8,15 @@ Enforces risk_score band clamping after generation.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime
 from typing import Literal
 
-from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+from layers.analysis.utils.llm import invoke_llm
 from pydantic import BaseModel, Field
 
-from layers.analysis.nodes.observe import check_output_for_injection
 from layers.analysis.core.state import AgentState
+from layers.analysis.utils.security import check_output_for_injection
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +62,6 @@ Rate verification using these anchors:
 - INSUFFICIENT_EVIDENCE: no meaningful supporting evidence found.
 
 CRITICAL RULE: Casual blogs, lifestyle magazines, or unverified social media posts CANNOT justify CONFIRMED - they support PROVISIONAL at most. Clinical evidence, authoritative medical institutions, local/national news reports, or quoted professional advice justify CONFIRMED.
-
 
 ═══════════════════════════════════════════════════════════════
 LIFECYCLE
@@ -155,7 +153,6 @@ class ClassificationResult(BaseModel):
   mechanism_level_match: bool = Field(description="True if the evidence documents the EXACT behavioral mechanism, False otherwise")
   rationale: str = Field(description="Reasoning behind classification")
 
-
 def calculate_deterministic_risk_score(severity: str, verification: str, mechanism_match: bool) -> float:
   """Calculate risk_score using a strict deterministic matrix."""
   base_scores = {"HIGH": 0.85, "MODERATE": 0.50, "LOW": 0.15}
@@ -169,15 +166,13 @@ def calculate_deterministic_risk_score(severity: str, verification: str, mechani
   elif verification.upper().strip() == "INSUFFICIENT_EVIDENCE":
     score -= 0.10
       
-  return max(0.0, min(1.0, score))
-
+  return round(max(0.0, min(1.0, score)), 2)
 
 def _pick_more_severe(a: ClassificationResult, b: ClassificationResult) -> ClassificationResult:
   """When self-consistency disagrees, pick the more severe result."""
   if SEVERITY_ORDER.get(a.severity, 0) >= SEVERITY_ORDER.get(b.severity, 0):
     return a
   return b
-
 
 def _build_prompt(state: AgentState) -> tuple[str, dict]:
   """Build the user prompt from state. Returns (prompt_text, stats_dict)."""
@@ -262,21 +257,18 @@ def _build_prompt(state: AgentState) -> tuple[str, dict]:
     "time_span_hours": time_span_hours,
   }
 
-
 def _invoke_classify(prompt: str) -> ClassificationResult:
   """Single LLM classification call."""
-  llm = ChatOpenAI(
+
+  return invoke_llm(
     model=CLASSIFY_MODEL,
-    api_key=os.getenv("OPENAI_API_KEY"),
+    messages=[
+      SystemMessage(content=_SYSTEM_PROMPT),
+      HumanMessage(content=prompt)
+    ],
+    schema=ClassificationResult,
     reasoning_effort=CLASSIFY_REASONING_EFFORT,
-    temperature=0,
-  ).with_structured_output(ClassificationResult)
-
-  return llm.invoke([
-    SystemMessage(content=_SYSTEM_PROMPT),
-    HumanMessage(content=prompt),
-  ])
-
+  )
 
 def classify_node(state: AgentState) -> dict:
   """CLASSIFY node - single-shot with self-consistency check.

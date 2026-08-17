@@ -1,4 +1,4 @@
--- Pediatric ENT Surveillance Pipeline - Schema
+-- Pediatric ENT Surveillance Pipeline — Schema
 -- PostgreSQL 16 + pgvector
 
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -36,7 +36,6 @@ CREATE TABLE posts (
     views               INTEGER DEFAULT 0,
     sbert_score         REAL,                    -- Max cosine similarity vs anchors (gate 3 score)
     matched_anchor_id   INTEGER,                 -- FK to sbert_anchors: which anchor scored highest for this post
-    gate4_relevant      BOOLEAN,                 -- Agent determination on ENT relevance
     gate4_category      TEXT,                    -- Risk label assigned by agent: HIGH | MODERATE | LOW
     linked_trend_id     TEXT,                    -- FK to trends
     collected_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -51,10 +50,9 @@ CREATE TABLE posts (
 CREATE INDEX idx_posts_collected          ON posts(collected_at);
 CREATE INDEX idx_posts_source             ON posts(source);
 CREATE INDEX idx_posts_metadata           ON posts USING gin(metadata);
-CREATE INDEX idx_posts_gate4              ON posts(gate4_relevant);
-CREATE INDEX idx_posts_gate4_category     ON posts(gate4_category) WHERE gate4_relevant = TRUE;
+CREATE INDEX idx_posts_gate4_category     ON posts(gate4_category);
 CREATE INDEX idx_posts_linked_trend       ON posts(linked_trend_id) WHERE linked_trend_id IS NOT NULL;
-CREATE INDEX idx_posts_creator_confirm    ON posts(creator_id, platform) WHERE gate4_relevant = TRUE;
+CREATE INDEX idx_posts_creator_confirm    ON posts(creator_id, platform) WHERE gate4_category IN ('HIGH', 'MODERATE');
 CREATE INDEX idx_posts_matched_anchor     ON posts(matched_anchor_id) WHERE matched_anchor_id IS NOT NULL;
 
 -- Table 3: sbert_anchors
@@ -81,15 +79,15 @@ CREATE TABLE trends (
     risk_score          REAL NOT NULL,           -- Computed risk (0.0 to 1.0)
     post_count          INTEGER DEFAULT 0,       -- Total confirmed posts linked to this trend
     platforms           JSONB,                   -- Distinct platforms this trend appears on
+    slang_terms         JSONB,                   -- Alternative names and hashtags
     discovery_source    TEXT,                    -- How the trend was initially discovered (e.g. gdelt_news)
     first_detected_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at        TIMESTAMPTZ,             -- Timestamp when the last post was linked to this trend
     lifecycle_status    TEXT NOT NULL DEFAULT 'Isolated incident', -- Emergence | Growth | Resurfacing | Declining | Latent | Isolated incident
+    lifecycle_history   JSONB DEFAULT '[]',      -- Time-series of lifecycle status and post counts: [{"date": "...", "status": "...", "post_count": 0}]
     verification_status TEXT DEFAULT 'PROVISIONAL', -- CONFIRMED | PROVISIONAL | INSUFFICIENT_EVIDENCE
-    false_positive      BOOLEAN DEFAULT FALSE,   -- Clinician-marked false positive; hides from dashboard
     search_context      TEXT,                    -- Behavioral description used for evidence search and cluster matching
     centroid            vector(384),             -- SBERT embedding centroid for cross-run cluster matching
-    slang_terms         JSONB DEFAULT '[]',      -- Alternative names, misspellings, or slang used for ingestion
 
     -- Cluster-level velocity tracking (how fast this trend is spreading)
     velocity_growth_rate    REAL,               -- Posts/day change rate (+ve = rising, -ve = falling)
@@ -106,27 +104,12 @@ CREATE TABLE trends (
 );
 
 CREATE INDEX idx_trends_lifecycle       ON trends(lifecycle_status);
-CREATE INDEX idx_trends_dashboard       ON trends(false_positive, lifecycle_status, risk_score);
+CREATE INDEX idx_trends_dashboard       ON trends(lifecycle_status, risk_score);
 CREATE INDEX idx_trends_centroid        ON trends USING hnsw (centroid vector_cosine_ops);
 CREATE INDEX idx_trends_velocity_sched  ON trends(velocity_next_check_at)
-    WHERE velocity_next_check_at IS NOT NULL AND false_positive = FALSE;
+    WHERE velocity_next_check_at IS NOT NULL;
 
--- Table 5: trend_lifecycle_history
--- Immutable event log for trend state transitions.
-CREATE TABLE trend_lifecycle_history (
-    history_id          SERIAL PRIMARY KEY,
-    trend_id            TEXT NOT NULL REFERENCES trends(trend_id),
-    event_type          TEXT NOT NULL,           -- discovery | post_update | lifecycle_change
-    to_status           TEXT,                    -- New lifecycle status after transition (NULL if status unchanged)
-    post_count_at_event INTEGER,                 -- Snapshot of post_count when this event occurred
-    triggered_by        TEXT,                    -- analysis_agent | weekly_job | clinician
-    notes               TEXT,                    -- Human-readable description of what happened
-    occurred_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_history_trend ON trend_lifecycle_history(trend_id, occurred_at);
-
--- Table 6: trend_signals
+-- Table 5: trend_signals
 -- Extracted signals that still require a verification workflow (e.g. news matches).
 CREATE TABLE trend_signals (
     signal_id           SERIAL PRIMARY KEY,
@@ -135,13 +118,9 @@ CREATE TABLE trend_signals (
     search_query        TEXT NOT NULL,           -- Query used to search platforms and verify this signal
     search_platforms    JSONB NOT NULL DEFAULT '["reddit","tiktok","instagram"]',
     search_status       TEXT NOT NULL DEFAULT 'pending',
-    posts_collected     INTEGER DEFAULT 0,       -- Posts found during the verification search
-    verified            BOOLEAN DEFAULT FALSE,   -- TRUE when signal confirmed as an active trend
     linked_trend_id     TEXT REFERENCES trends(trend_id),
     dismissed           BOOLEAN DEFAULT FALSE,   -- TRUE if a clinician dismissed this signal
-    dismissed_at        TIMESTAMPTZ,
     detected_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    error_msg           TEXT,                    -- Error message if verification search/agent run failed
 
     CONSTRAINT chk_signals_type CHECK (signal_type IN ('news_match', 'slow_spread'))
 );
@@ -155,7 +134,7 @@ CREATE UNIQUE INDEX idx_signals_news_url ON trend_signals(
     (signal_data->>'news_source_url'), search_query
 ) WHERE signal_type = 'news_match';
 
--- Table 7: pipeline_state
+-- Table 6: pipeline_state
 -- Generic KV store for worker state.
 CREATE TABLE pipeline_state (
     state_key           TEXT PRIMARY KEY,        -- Key name for the pipeline state item
@@ -171,7 +150,7 @@ INSERT INTO pipeline_state (state_key, state_value) VALUES
     ('subreddit_stats', '{}'::jsonb)
 ON CONFLICT (state_key) DO NOTHING;
 
--- Table 8: agent_runs
+-- Table 7: agent_runs
 -- Stores LangGraph execution stats.
 CREATE TABLE agent_runs (
     run_id              TEXT PRIMARY KEY,        -- UUID for this agent run; also used as result folder name
