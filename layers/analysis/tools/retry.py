@@ -24,6 +24,7 @@ class PMIDNotFoundError(Exception):
   Non-retriable and NOT caught by @with_retry - must propagate so
   VERIFY can distinguish 'confirmed absent' from 'tool failed'.
   """
+  pass
 
 
 #  Retry decorator
@@ -35,8 +36,8 @@ def with_retry(
   """Decorator: retry on transient errors, return ``empty_return()`` when exhausted.
 
   - ``PMIDNotFoundError`` is never caught - it propagates as a real signal.
-  - Transient errors (timeout, connection, 5xx) are retried with exponential backoff.
-  - Non-retriable errors (parse failures, 4xx) fail fast and return empty.
+  - Transient/generic errors are retried with exponential backoff.
+  - Fails and returns empty when max_attempts is exhausted.
   """
 
   def decorator(fn: Callable) -> Callable:
@@ -47,14 +48,11 @@ def with_retry(
           return fn(*args, **kwargs)
         except PMIDNotFoundError:
           raise  # never retry, never swallow
-        except (TimeoutError, ConnectionError, OSError) as exc:
+        except Exception as exc:
           if attempt == max_attempts - 1:
             logger.warning("[TOOL] %s exhausted retries: %s", fn.__name__, exc)
             return empty_return()
           time.sleep(backoff * (2**attempt))
-        except Exception as exc:
-          logger.error("[TOOL] %s non-retriable error: %s", fn.__name__, exc)
-          return empty_return()
 
     return wrapper
 
@@ -83,10 +81,12 @@ class DuckDuckGoCircuitBreaker:
   def record_failure(self) -> None:
     with self._lock:
       self._failures += 1
-      if self._failures >= self._threshold:
+      if self._failures == self._threshold:
         self._open = True
         logger.warning(
           "[CIRCUIT] DuckDuckGo circuit breaker OPEN after %d failures - "
           "skipping DDG for remainder of run",
           self._failures,
         )
+      elif self._failures > self._threshold:
+        self._open = True

@@ -20,8 +20,9 @@ from layers.analysis.utils.security import check_output_for_injection
 
 logger = logging.getLogger(__name__)
 
-CLASSIFY_MODEL = "gpt-5.6-terra"
+CLASSIFY_MODEL = "gpt-5.1"
 CLASSIFY_REASONING_EFFORT = "medium"
+ENABLE_SELF_CONSISTENCY = False  # Set to True for max safety, False to cut API costs in half
 
 # risk_score must fall within its severity band
 SEVERITY_BANDS = {
@@ -36,7 +37,7 @@ VERIFICATION_ORDER = {"INSUFFICIENT_EVIDENCE": 0, "PROVISIONAL": 1, "CONFIRMED":
 
 _SYSTEM_PROMPT = """\
 You are scoring and classifying social-media trends for a child-safety monitoring
-dashboard. For each candidate trend, output: severity, risk_score, lifecycle,
+dashboard. For each candidate trend, output: severity, lifecycle,
 verification, supporting_evidence_ids, slang_terms, mechanism_level_match, and rationale.
 
 ═══════════════════════════════════════════════════════════════
@@ -121,6 +122,7 @@ SELF-CHECK before finalizing:
 3. Does lifecycle depend on meeting the post/platform/time threshold?
 4. Did you generate 3-5 slang_terms (alternative names, misspellings, hashtags) that teens use for this?
 5. Did you explicitly set mechanism_level_match to True ONLY if the evidence describes the EXACT behavior?
+6. Is your rationale strictly under 50 words?
 """
 
 _USER_PROMPT = """\
@@ -147,11 +149,9 @@ class ClassificationResult(BaseModel):
   lifecycle: Literal["Emergence", "Growth", "Resurfacing", "Declining", "Latent", "Isolated incident"]
   verification: Literal["CONFIRMED", "PROVISIONAL", "INSUFFICIENT_EVIDENCE"]
   supporting_evidence_ids: list[str] = Field(description="PMIDs (pmid:NNN) or URLs that justify the verification rating")
-  post_count: int
-  platform_count: int
   slang_terms: list[str] = Field(description="3-5 alternative slang names, misspellings, or hashtags used for this trend")
   mechanism_level_match: bool = Field(description="True if the evidence documents the EXACT behavioral mechanism, False otherwise")
-  rationale: str = Field(description="Reasoning behind classification")
+  rationale: str = Field(description="Extremely brief reasoning (strictly under 50 words)")
 
 def calculate_deterministic_risk_score(severity: str, verification: str, mechanism_match: bool) -> float:
   """Calculate risk_score using a strict deterministic matrix."""
@@ -283,26 +283,31 @@ def classify_node(state: AgentState) -> dict:
   prompt, stats = _build_prompt(state)
 
   try:
-    # Run classification twice for self-consistency
-    result_a = _invoke_classify(prompt)
-    result_b = _invoke_classify(prompt)
-
-    low_confidence = (
-      result_a.severity != result_b.severity
-      or result_a.verification != result_b.verification
-    )
-
-    if low_confidence:
-      logger.warning(
-        "CLASSIFY: self-consistency DISAGREEMENT for %s - "
-        "run_a: severity=%s verification=%s | run_b: severity=%s verification=%s",
-        cluster_id,
-        result_a.severity, result_a.verification,
-        result_b.severity, result_b.verification,
+    if ENABLE_SELF_CONSISTENCY:
+      # Run classification twice for self-consistency
+      result_a = _invoke_classify(prompt)
+      result_b = _invoke_classify(prompt)
+  
+      low_confidence = (
+        result_a.severity != result_b.severity
+        or result_a.verification != result_b.verification
       )
-      result = _pick_more_severe(result_a, result_b)
+  
+      if low_confidence:
+        logger.warning(
+          "CLASSIFY: self-consistency DISAGREEMENT for %s - "
+          "run_a: severity=%s verification=%s | run_b: severity=%s verification=%s",
+          cluster_id,
+          result_a.severity, result_a.verification,
+          result_b.severity, result_b.verification,
+        )
+        result = _pick_more_severe(result_a, result_b)
+      else:
+        result = result_a
     else:
-      result = result_a
+      # Single run to save costs
+      result = _invoke_classify(prompt)
+      low_confidence = False
 
     severity = result.severity
     lifecycle = result.lifecycle
@@ -361,8 +366,6 @@ def classify_node(state: AgentState) -> dict:
     "reasoning": reasoning,
     "needs_more_evidence": needs_more_evidence,
     "evidence_gap": None,
-    "downgrade_reason": None,
-    "downgraded_from_harmful": False,
     "low_confidence": low_confidence,
     "slang_terms": slang_terms,
     "mechanism_level_match": mechanism_level_match,

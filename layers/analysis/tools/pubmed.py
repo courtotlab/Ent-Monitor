@@ -19,7 +19,7 @@ from layers.analysis.tools.retry import PMIDNotFoundError, with_retry
 logger = logging.getLogger(__name__)
 
 _BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-_TIMEOUT = 15  # seconds
+_TIMEOUT = 5  # seconds
 
 
 #  Internal: parse PubMed XML into EvidenceItems
@@ -51,12 +51,14 @@ def _parse_articles(xml_text: str) -> list[EvidenceItem]:
     items.append(
       EvidenceItem(
         source="pubmed",
+        source_tier="clinical",
         title=title or "Untitled",
         url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
         pmid=pmid,
         snippet=(abstract or "")[:800],
         is_relevant=False,  # tagged by RESEARCH LLM later
         contradicts_harm=False,
+        relevance_score=0,
       )
     )
   return items

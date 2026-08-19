@@ -23,7 +23,7 @@ from layers.analysis.tools.retry import PMIDNotFoundError
 
 logger = logging.getLogger(__name__)
 
-VERIFY_MODEL = "gpt-4.1"
+VERIFY_MODEL = "gpt-4.1-mini"
 
 class VerifyResult(BaseModel):
   citation_relevant: bool = Field(description="Does each cited paper actually support the specific claim made? Require topical, population, and context match - not just thematic overlap.")
@@ -162,8 +162,7 @@ def verify_node(state: AgentState) -> dict:
         f'- [{c["citation"].get("source", "?")}] "{c["citation"].get("title", "?")}"\n'
         f"  PMID: {c['citation'].get('pmid', 'n/a')} | Valid: {c['valid']}\n"
         f"  Fetched title: {c['fetched_title']}\n"
-        f"  Fetched snippet: {c['fetched_snippet'][:800]}\n"
-        f"  Claim: {c['citation'].get('relevance_note', 'n/a')}"
+        f"  Fetched snippet: {c['fetched_snippet'][:800]}"
         for c in checkable
       )
 
@@ -212,7 +211,8 @@ evidence), is the assigned label justified?
 
       # Use the structured flag from CLASSIFY instead of re-parsing prose
       mechanism_level_match = state.get("mechanism_level_match", False)
-      if not mechanism_level_match and not citation_relevant:
+      if not mechanism_level_match and citation_relevant:
+        citation_relevant = False
         notes = "CLASSIFY flagged no mechanism_level_match. " + notes
         logger.info("VERIFY: mechanism_level_match=False - forcing citation_relevant=False")
     except Exception as exc:

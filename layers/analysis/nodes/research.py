@@ -24,7 +24,7 @@ from layers.analysis.tools.semantic_scholar import semantic_scholar_search
 
 logger = logging.getLogger(__name__)
 
-RESEARCH_MODEL = "gpt-4.1"
+RESEARCH_MODEL = "gpt-4.1-mini"
 
 # Source tier classification
 CLINICAL_SOURCES = frozenset({"pubmed", "semantic_scholar"})
@@ -77,6 +77,7 @@ class RelevanceTag(BaseModel):
   index: int
   is_relevant: bool = Field(description="Does this evidence directly relate to the pediatric ENT behavior described?")
   contradicts_harm: bool = Field(description="Does this evidence argue the behavior is actually SAFE (not harmful)?")
+  relevance_score: int = Field(description="Score from 1 to 10 indicating how closely this matches the specific harm hypothesis. 10 is exact match, 1 is barely related.")
 
 class RelevanceTags(BaseModel):
   tags: list[RelevanceTag]
@@ -155,44 +156,42 @@ def research_node(state: AgentState) -> dict:
   results: list[EvidenceItem] = []
   new_queries = list(prior_queries)
 
+  # Step 1: Always PubMed first
+  pubmed_collected = []
   for q_data in queries_to_run:
     query = q_data.get("query", search_context)
-
-    # Step 1: Always PubMed first
     logger.info("RESEARCH: step 1 - pubmed_search with query=%r", query)
     try:
       pubmed_results = pubmed_search(query)
-      results.extend(pubmed_results)
+      pubmed_collected.extend(pubmed_results)
     except Exception as exc:
       logger.error("RESEARCH pubmed_search crashed: %s", exc)
       tool_errors.append(ToolError(tool="pubmed_search", error_type="exception", timestamp=datetime.now(UTC).isoformat(), query=query))
-
     new_queries.append(query)
 
-  # Tag source tiers so we can count clinical sources
-  for item in results:
+  for item in pubmed_collected:
     _tag_source_tier(item)
-
-  # Tag relevance via LLM
-  if results:
-    results = _tag_relevance(results, search_context, harm_hypothesis)
+  if pubmed_collected:
+    pubmed_collected = _tag_relevance(pubmed_collected, search_context, harm_hypothesis)
+  results.extend(pubmed_collected)
 
   # Step 2: DuckDuckGo (Always run for new trends that might not be in PubMed yet)
   logger.info("RESEARCH: step 2 - duckduckgo_search (always run for emerging trends)")
+  ddg_collected = []
   for q_data in queries_to_run:
     query = q_data.get("query", search_context)
     ddg_query = f"{query} FDA OR hospital OR official warning OR news"
     try:
       ddg_results = duckduckgo_search(ddg_query, tool_errors=tool_errors)
-      for item in ddg_results:
-        _tag_source_tier(item)
-      results.extend(ddg_results)
+      ddg_collected.extend(ddg_results)
     except Exception as exc:
       logger.warning("RESEARCH duckduckgo_search failed: %s", exc)
 
-  # Re-tag relevance for web results
-  if results:
-    results = _tag_relevance(results, search_context, harm_hypothesis)
+  for item in ddg_collected:
+    _tag_source_tier(item)
+  if ddg_collected:
+    ddg_collected = _tag_relevance(ddg_collected, search_context, harm_hypothesis)
+  results.extend(ddg_collected)
 
   # Step 3: Semantic Scholar if PubMed returned < 2 relevant clinical sources
   clinical_relevant = sum(
@@ -202,49 +201,62 @@ def research_node(state: AgentState) -> dict:
 
   if clinical_relevant < 2:
     logger.info("RESEARCH: step 3 - semantic_scholar_search (only %d clinical sources from PubMed)", clinical_relevant)
+    ss_collected = []
     for q_data in queries_to_run:
       query = q_data.get("query", search_context)
       try:
         ss_results = semantic_scholar_search(query)
-        for item in ss_results:
-          _tag_source_tier(item)
-        results.extend(ss_results)
+        ss_collected.extend(ss_results)
       except Exception as exc:
         logger.error("RESEARCH semantic_scholar_search crashed: %s", exc)
         tool_errors.append(ToolError(tool="semantic_scholar_search", error_type="exception", timestamp=datetime.now(UTC).isoformat(), query=query))
+        
+    for item in ss_collected:
+      _tag_source_tier(item)
+    if ss_collected:
+      ss_collected = _tag_relevance(ss_collected, search_context, harm_hypothesis)
+    results.extend(ss_collected)
 
-    # Re-tag relevance for new items
-    if results:
-      results = _tag_relevance(results, search_context, harm_hypothesis)
-
-  # Step 4: CrossRef to validate/enrich DOIs already found (not a search step)
+  # Step 4: CrossRef to validate/enrich DOIs already found
   dois_found = [e for e in results if e.get("pmid") or "doi.org" in e.get("url", "")]
   if dois_found:
     logger.info("RESEARCH: step 4 - crossref DOI enrichment for %d items", len(dois_found))
+    cr_collected = []
     for e in dois_found[:3]:  # limit enrichment calls
       doi_query = e.get("pmid") or e.get("title", "")
       if doi_query:
         try:
           cr_results = crossref_search(doi_query)
-          for item in cr_results:
-            _tag_source_tier(item)
-          results.extend(cr_results)
+          cr_collected.extend(cr_results)
         except Exception as exc:
           logger.warning("RESEARCH crossref enrichment failed: %s", exc)
+          
+    for item in cr_collected:
+      _tag_source_tier(item)
+    if cr_collected:
+      cr_collected = _tag_relevance(cr_collected, search_context, harm_hypothesis)
+    results.extend(cr_collected)
 
   # Filter to relevant only
   results = [r for r in results if r.get("is_relevant")]
 
-  # Dedup by PMID or title
-  seen = set()
-  unique_evidence = []
-  for item in results + existing_evidence:
+  # Dedup by PMID or title (later items overwrite earlier ones so CrossRef enrichment wins)
+  seen = {}
+  unique_evidence_no_key = []
+  for item in existing_evidence + results:
     key = item.get("pmid") or item.get("title", "").strip().lower()
-    if key and key not in seen:
-      seen.add(key)
-      unique_evidence.append(item)
-    elif not key:
-      unique_evidence.append(item)
+    if key:
+      seen[key] = item
+    else:
+      unique_evidence_no_key.append(item)
+      
+  unique_evidence = list(seen.values()) + unique_evidence_no_key
+
+  # Sort by PubMed first, then by relevance_score descending
+  unique_evidence.sort(key=lambda x: (
+      0 if x.get("source") == "pubmed" else 1,
+      -x.get("relevance_score", 0)
+  ))
 
   # Cap at 5 to control downstream token cost
   new_evidence = unique_evidence[:5]
@@ -305,6 +317,7 @@ Evidence items:
       if 0 <= idx < len(items):
         items[idx]["is_relevant"] = tag.is_relevant
         items[idx]["contradicts_harm"] = tag.contradicts_harm
+        items[idx]["relevance_score"] = tag.relevance_score
   except Exception as exc:
     logger.warning(
       "Relevance tagging failed: %s - leaving all as is_relevant=False", exc

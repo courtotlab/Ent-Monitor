@@ -35,6 +35,8 @@ from layers.analysis.nodes.research import research_node
 from layers.analysis.nodes.verify import verify_node
 from layers.analysis.tools.duckduckgo import set_circuit_breaker
 from layers.analysis.tools.retry import DuckDuckGoCircuitBreaker
+from layers.analysis.tools.semantic_scholar import reset_circuit_breaker as reset_ss_circuit_breaker
+from layers.analysis.utils.formatters import build_cluster_json
 from layers.shared.paths import get_run_dir
 
 load_dotenv()
@@ -56,6 +58,7 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
   # Fresh circuit breaker per run
   circuit_breaker = DuckDuckGoCircuitBreaker()
   set_circuit_breaker(circuit_breaker)
+  reset_ss_circuit_breaker()
 
   # Record the agent run in the database
   create_agent_run(run_id, len(posts))
@@ -67,6 +70,7 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "cluster_results": [],
     "cluster_id": "observe_batch",
     "posts": posts,
+    "trend_name": "",
     "search_context": "",
     "is_known_trend": False,
     "matched_trend_id": None,
@@ -93,8 +97,6 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "reasoning": "",
     "needs_more_evidence": False,
     "no_evidence_found": False,
-    "downgrade_reason": None,
-    "downgraded_from_harmful": False,
     "verify_finding": None,
     "report": None,
     "tool_degraded": False,
@@ -153,52 +155,17 @@ def merge_known_node(state: AgentState) -> dict:
     return {"cluster_results": list(state.get("cluster_results", []))}
 
   # Build a minimal cluster_result entry so the dashboard sees the merge
-  platforms = list(set(p.get("platform", "unknown") for p in posts))
-  cluster_json = {
-    "run_id": state.get("run_id", "unknown_run"),
-    "cluster_id": cluster_id,
-    "processed_at": datetime.now(UTC).isoformat(),
-    "trend": {
-      "trend_name": state.get("search_context", "unknown_trend"),
-      "is_known_trend": True,
-      "matched_trend_id": trend_id,
-      "post_count": result["post_count"],
-      "platforms": platforms,
-    },
-    "classification": {
-      "label": result.get("label", "MODERATE"),
-      "risk_score": result.get("risk_score", 0.5),
-      "verification": result.get("verification_status", "CONFIRMED"),
-      "lifecycle": result.get("lifecycle_status", "Resurfacing"),
-    },
-    "centroid": centroid,
-    "posts": [
-      {
-        "post_id": p.get("post_id", ""),
-        "platform": p.get("platform", ""),
-        "caption_text": (p.get("caption_text") or "")[:200],
-        "sbert_score": p.get("sbert_score", 0.0),
-        "likes": p.get("likes", 0),
-        "views": p.get("views", 0),
+  cluster_json = build_cluster_json(
+      state=state,
+      abstract=f"Merged {len(posts)} new posts into existing trend '{trend_id}'",
+      is_fast_path=True,
+      overrides={
+          "label": result.get("label", "MODERATE"),
+          "risk_score": result.get("risk_score", 0.5),
+          "verification": result.get("verification_status", "CONFIRMED"),
+          "lifecycle": result.get("lifecycle_status", "Resurfacing"),
       }
-      for p in posts
-    ],
-    "evidence": [],
-    "reasoning": {
-      "why_this_label": f"Fast-path merge into existing trend (DB label: {result['label']})",
-    },
-    "report_summary": {
-      "summary": f"Merged {len(posts)} new posts into existing trend '{trend_id}'",
-      "harm_mechanism": "",
-      "key_evidence": [],
-    },
-    "flags": {
-      "low_confidence": False,
-      "no_literature_found": False,
-      "downgraded_from_harmful": False,
-      "tool_degraded": False,
-    },
-  }
+  )
 
   current_results = list(state.get("cluster_results", []))
   current_results.append(cluster_json)
@@ -223,11 +190,13 @@ def pop_cluster_node(state: AgentState) -> dict:
     "clusters_queue": remaining,
     "cluster_id": cluster.get("cluster_id", "unknown"),
     "posts": cluster.get("posts", []),
+    "trend_name": cluster.get("cluster_name", ""),
     "search_context": cluster.get("search_context", ""),
     "is_known_trend": cluster.get("is_known_trend", False),
     "matched_trend_id": cluster.get("matched_trend_id"),
     "centroid": cluster.get("centroid", []),
     "triage_flag": cluster.get("triage_flag", "unclear"),
+    
     # Known-trend context from DB match
     "db_trend_label": cluster.get("db_trend_label"),
     "db_trend_risk_score": cluster.get("db_trend_risk_score"),
@@ -251,8 +220,10 @@ def pop_cluster_node(state: AgentState) -> dict:
     "reasoning": "",
     "needs_more_evidence": False,
     "no_evidence_found": False,
-    "downgrade_reason": None,
-    "downgraded_from_harmful": False,
+    "mechanism_level_match": False,
+    "slang_terms": [],
+    "lifecycle": None,
+    "verification": None,
     "verify_finding": None,
     "report": None,
     "tool_degraded": False,
@@ -275,7 +246,7 @@ def route_after_pop(state: AgentState) -> Command:
   # Override: if triage says likely_harmful but DB says Low, force full pipeline
   if is_known and matched_id:
     contradicts = (
-      triage_flag == "likely_harmful" and db_label == "Low"
+      triage_flag == "likely_harmful" and (db_label and db_label.upper() == "LOW")
     )
     if not contradicts:
       return Command(goto="merge_known")
@@ -349,7 +320,7 @@ def _write_run_summary(run_id: str, cluster_results: list[dict]) -> None:
         "cluster_id": r.get("cluster_id", "unknown"),
         "label": r.get("classification", {}).get("label", "MODERATE"),
         "risk_score": r.get("classification", {}).get("risk_score", 0.0),
-        "low_confidence": r.get("flags", {}).get("low_confidence", False),
+        "low_confidence": r.get("classification", {}).get("confidence", 1.0) < 0.75,
       }
       for r in cluster_results
     ],

@@ -21,6 +21,10 @@ _TIMEOUT = 15
 
 _CIRCUIT_OPEN = False
 
+def reset_circuit_breaker() -> None:
+  global _CIRCUIT_OPEN
+  _CIRCUIT_OPEN = False
+
 @with_retry(max_attempts=4, backoff=3.0)
 def semantic_scholar_search(
   query: str,
@@ -68,12 +72,14 @@ def semantic_scholar_search(
     items.append(
       EvidenceItem(
         source="semantic_scholar",
+        source_tier="clinical",
         title=paper.get("title", "Untitled"),
         url=url,
         pmid=pmid,
         snippet=(paper.get("abstract") or "")[:800],
         is_relevant=False,
         contradicts_harm=False,
+        relevance_score=0,
       )
     )
   return items

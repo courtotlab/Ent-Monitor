@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
 
 from langchain_core.messages import HumanMessage
 from layers.analysis.utils.llm import invoke_llm
@@ -18,8 +17,8 @@ from pydantic import BaseModel, Field
 
 from layers.analysis.core.state import AgentState
 from layers.analysis.db.queries import write_cluster_to_db
+from layers.analysis.utils.formatters import build_cluster_json
 from layers.shared.paths import get_run_dir
-from layers.shared.posts import get_engagement
 
 logger = logging.getLogger(__name__)
 
@@ -46,17 +45,10 @@ Generate a structured summary for this cluster.
 """
 
 class ReportSummary(BaseModel):
-  cluster_id: str
-  label: str
-  risk_score: float
   trend_name: str = Field(description="short behavioral name")
   summary: str = Field(description="2-3 sentence plain-English description")
   harm_mechanism: str = Field(description="1 sentence: why this is potentially harmful to pediatric ENT health")
   key_evidence: list[str] = Field(description="List of key evidence e.g., 'Paper 1 (PMID: ...)', 'Source 2'")
-  confidence: float
-  evidence_status: str
-  post_count: int
-  platforms: list[str]
 
 def report_node(state: AgentState) -> dict:
   """REPORT node generates summary, writes full JSON, appends to cluster_results.
@@ -123,107 +115,30 @@ def report_node(state: AgentState) -> dict:
   except Exception as exc:
     logger.warning("REPORT LLM failed: %s generating minimal report", exc)
     report = {
-      "cluster_id": cluster_id,
-      "label": label,
-      "risk_score": risk_score,
-      "trend_name": state.get("search_context", "Unknown trend"),
+      "trend_name": state.get("trend_name", "Unknown trend"),
       "summary": f"Classification: {label} with confidence {confidence:.2f}",
       "harm_mechanism": "Unable to generate LLM error",
       "key_evidence": [],
-      "confidence": confidence,
-      "evidence_status": evidence_status,
-      "post_count": len(posts),
-      "platforms": platforms,
     }
 
   logger.info("REPORT: generated summary for %s", cluster_id)
 
   #  Build and write full cluster JSON
-  no_evidence = state.get("no_evidence_found", False)
-  needs_human_review = state.get("needs_human_review", False)
-  tool_degraded = state.get("tool_degraded", False)
-  downgraded = state.get("downgraded_from_harmful", False)
-
-  # Note: explicit None for citation_valid (e.g., tool error) is treated as a pass
-  verify_passed = (
-    vf is not None
-    and vf.get("citation_valid", True) is not False
-    and vf.get("citation_relevant", True)
+  cluster_json = build_cluster_json(
+      state=state,
+      abstract=report.get("summary", ""),
+      harm_mechanism=report.get("harm_mechanism", ""),
+      rising_non_trend=False,
+      overrides={"trend_name": report.get("trend_name")} if report.get("trend_name") else None,
   )
-
-  cluster_json = {
-    "run_id": run_id,
-    "cluster_id": cluster_id,
-    "processed_at": datetime.now(UTC).isoformat(),
-    "classification": {
-      "label": label,
-      "lifecycle": state.get("lifecycle", "Isolated incident"),
-      "verification": state.get("verification", "PROVISIONAL"),
-      "confidence": confidence,
-      "risk_score": risk_score,
-      "evidence_status": evidence_status,
-      "no_evidence_found": no_evidence,
-      "verify_passed": verify_passed,
-      "verify_failure_reason": vf.get("notes", "") if vf and not verify_passed else "",
-    },
-    "trend": {
-      "trend_name": report.get("trend_name", cluster_id),
-      "is_known_trend": state.get("is_known_trend", False),
-      "matched_trend_id": state.get("matched_trend_id"),
-      "post_count": len(posts),
-      "platforms": platforms,
-    },
-    "posts": [
-      {
-        "post_id": p.get("post_id", ""),
-        "platform": p.get("platform", ""),
-        "caption_text": (p.get("caption_text") or "")[:200],
-        "sbert_score": p.get("sbert_score", 0.0),
-        "likes": get_engagement(p, "likes"),
-        "views": get_engagement(p, "views"),
-      }
-      for p in posts
-    ],
-    "evidence": [
-      {
-        "source": e["source"],
-        "pmid": e.get("pmid"),
-        "title": e["title"],
-        "url": e["url"],
-        "relevance_note": e.get("snippet", "")[:150],
-        "is_relevant": e.get("is_relevant", False),
-        "contradicts_harm": e.get("contradicts_harm", False),
-      }
-      for e in evidence
-    ],
-    "reasoning": {
-      "research_retries_left": state.get("research_retries_left", 0),
-      "verify_retries_left": state.get("verify_retries_left", 0),
-      "evidence_score_at_assess": state.get("evidence_score", 0.0),
-      "why_this_label": state.get("reasoning", ""),
-      "downgrade_reason": state.get("downgrade_reason"),
-    },
-    "report_summary": {
-      "summary": report.get("summary", ""),
-      "harm_mechanism": report.get("harm_mechanism", ""),
-      "key_evidence": report.get("key_evidence", []),
-    },
-    "flags": {
-      "needs_human_review": needs_human_review,
-      "rising_non_trend": False,  # RESERVED UNUSED FIELD - TODO: velocity monitoring integration
-      "no_literature_found": no_evidence,
-      "downgraded_from_harmful": downgraded,
-      "tool_degraded": tool_degraded,
-    },
-  }
 
   if tool_errors:
     cluster_json["tool_errors"] = [
       {
-        "tool": te["tool"],
-        "error_type": te["error_type"],
-        "timestamp": te["timestamp"],
-        "query": te["query"],
+        "tool": te.get("tool", "unknown"),
+        "error_type": te.get("error_type", "unknown"),
+        "timestamp": te.get("timestamp", ""),
+        "query": te.get("query", ""),
       }
       for te in tool_errors
     ]

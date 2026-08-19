@@ -53,12 +53,14 @@ def crossref_search(
     items.append(
       EvidenceItem(
         source="crossref",
+        source_tier="web_only",
         title=title,
         url=f"https://doi.org/{doi}" if doi else "",
         pmid=None,
         snippet=abstract[:800],
         is_relevant=False,
         contradicts_harm=False,
+        relevance_score=0,
       )
     )
   return items

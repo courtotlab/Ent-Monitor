@@ -1,3 +1,5 @@
+import json
+import math
 import logging
 from datetime import UTC, datetime
 
@@ -58,7 +60,7 @@ def fetch_unprocessed_posts(threshold: float = 0.38) -> list[dict]:
     return posts
 
 
-def find_nearest_trend(centroid: list[float], threshold: float = 0.78) -> dict | None:
+def find_nearest_trend(centroid: list[float], threshold: float = 0.95) -> dict | None:
   """Use pgvector HNSW index to find the closest DB trend to a centroid.
 
   Returns the matched trend dict or None if nothing above threshold.
@@ -103,6 +105,66 @@ def find_nearest_trend(centroid: list[float], threshold: float = 0.78) -> dict |
   except Exception as exc:
     logger.warning("DB: pgvector KNN query failed - %s", exc)
     return None
+
+
+# Shared Helpers
+
+def _merge_centroids(existing_centroid_text: str | None, existing_count: int, new_centroid: list[float] | None, new_count: int) -> str | None:
+  if not existing_centroid_text or not new_centroid or len(new_centroid) == 0:
+    return None
+  
+  existing_vals = [float(x) for x in existing_centroid_text.strip('[]').split(',')]
+  if len(existing_vals) != len(new_centroid):
+    return None
+    
+  total = existing_count + new_count
+  if total <= 0:
+    return None
+    
+  merged = [(existing_vals[i] * existing_count + new_centroid[i] * new_count) / total for i in range(len(new_centroid))]
+  
+  norm = math.sqrt(sum(x * x for x in merged))
+  if norm > 0:
+    merged = [x / norm for x in merged]
+    
+  return '[' + ','.join(str(v) for v in merged) + ']'
+
+def _check_resurfacing(trend_id: str, lifecycle: str, last_seen: datetime | None) -> str:
+  if not last_seen:
+    return lifecycle
+  days_since_last = (datetime.now(UTC) - last_seen).days
+  if days_since_last > 14 and lifecycle not in ("Emergence",):
+    logger.info("DB: trend %s resurfacing after %d days of inactivity", trend_id, days_since_last)
+    return "Resurfacing"
+  return lifecycle
+
+def _reassign_and_update_posts(cur, posts: list[dict], trend_id: str, label: str) -> None:
+  for p in posts:
+    p_id = p.get("post_id")
+    p_platform = p.get("platform")
+    if not p_id or not p_platform:
+      continue
+
+    cur.execute(
+      "SELECT linked_trend_id FROM posts WHERE post_id = %s AND platform = %s",
+      (p_id, p_platform),
+    )
+    old = cur.fetchone()
+    if old and old[0] and old[0] != trend_id:
+      cur.execute(
+        "UPDATE trends SET post_count = GREATEST(post_count - 1, 0) WHERE trend_id = %s",
+        (old[0],),
+      )
+
+    cur.execute(
+      """
+        UPDATE posts
+        SET gate4_category  = %s,
+            linked_trend_id = %s
+        WHERE post_id = %s AND platform = %s
+      """,
+      (label, trend_id, p_id, p_platform),
+    )
 
 
 # Agent run tracking
@@ -201,10 +263,13 @@ def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None)
   slang_terms = classification.get("slang_terms", [])
 
   post_count = trend_data.get("post_count", 0)
+  abstract = cluster_json.get("abstract", "")
+  search_context = cluster_json.get("search_context", "")
+  harm_mechanism = cluster_json.get("harm_mechanism", "")
+  evidence_data = cluster_json.get("evidence", {})
   platforms = trend_data.get("platforms", [])
 
   posts = cluster_json.get("posts", [])
-  search_context = cluster_json.get("search_context", "")
 
   centroid_str = None
   if centroid and isinstance(centroid, (list, tuple)) and len(centroid) > 0:
@@ -225,25 +290,11 @@ def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None)
       lifecycle = classification.get("lifecycle", "Isolated incident")
       verification = classification.get("verification", "PROVISIONAL")
 
-      # Resurfacing detection: if last_seen > 14 days ago and trend is not new
-      if not is_new_trend and existing[3]:
-        days_since_last = (now - existing[3]).days
-        if days_since_last > 14 and existing[4] not in ("Emergence",):
-          lifecycle = "Resurfacing"
-          logger.info("DB: trend %s resurfacing after %d days of inactivity", trend_id, days_since_last)
-
-      # Weighted centroid merge
-      if not is_new_trend and existing[2] and centroid:
-        existing_post_count = existing[1] or 0
-        existing_centroid_vals = [float(x) for x in existing[2].strip('[]').split(',')]
-        if len(existing_centroid_vals) == len(centroid):
-          total_posts = existing_post_count + post_count
-          if total_posts > 0:
-            merged_centroid = [
-              (existing_centroid_vals[i] * existing_post_count + centroid[i] * post_count) / total_posts
-              for i in range(len(centroid))
-            ]
-            centroid_str = '[' + ','.join(str(v) for v in merged_centroid) + ']'
+      if not is_new_trend:
+        lifecycle = _check_resurfacing(trend_id, lifecycle, existing[3])
+        merged_centroid = _merge_centroids(existing[2], existing[1] or 0, centroid, post_count)
+        if merged_centroid:
+          centroid_str = merged_centroid
 
       # 2. UPSERT into trends
       cur.execute(
@@ -251,8 +302,8 @@ def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None)
           INSERT INTO trends
             (trend_id, label, risk_score, post_count, platforms, slang_terms,
              verification_status, lifecycle_status, first_detected_at, last_seen_at,
-             search_context, centroid, velocity_next_check_at, lifecycle_history)
-          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector,
+             abstract, search_context, trend_name, harm_mechanism, evidence, centroid, velocity_next_check_at, lifecycle_history)
+          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector,
                   NOW() + INTERVAL '24 hours',
                   jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', %s)))
           ON CONFLICT (trend_id) DO UPDATE SET
@@ -284,43 +335,20 @@ def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None)
                                     ) combined
                                   ),
             last_seen_at        = EXCLUDED.last_seen_at,
+            trend_name          = COALESCE(EXCLUDED.trend_name, trends.trend_name),
             search_context      = COALESCE(EXCLUDED.search_context, trends.search_context),
+            harm_mechanism      = COALESCE(EXCLUDED.harm_mechanism, trends.harm_mechanism),
             centroid            = COALESCE(EXCLUDED.centroid, trends.centroid)
         """,
         (trend_id, label, risk_score, post_count, Json(platforms), Json(slang_terms),
          verification, lifecycle,
-         now, now, search_context or None, centroid_str,
+         now, now, abstract or None, search_context or None, trend_name or None, harm_mechanism or None, Json(evidence_data) if evidence_data else None, centroid_str,
          lifecycle, post_count),
       )
 
 
       # 4. Update posts - handle re-assignment from old trends
-      for p in posts:
-        p_id = p.get("post_id")
-        p_platform = p.get("platform")
-        if not p_id or not p_platform:
-          continue
-
-        cur.execute(
-          "SELECT linked_trend_id FROM posts WHERE post_id = %s AND platform = %s",
-          (p_id, p_platform),
-        )
-        row = cur.fetchone()
-        if row and row[0] and row[0] != trend_id:
-          cur.execute(
-            "UPDATE trends SET post_count = GREATEST(post_count - 1, 0) WHERE trend_id = %s",
-            (row[0],),
-          )
-
-        cur.execute(
-          """
-            UPDATE posts
-            SET gate4_category  = %s,
-                linked_trend_id = %s
-            WHERE post_id = %s AND platform = %s
-          """,
-          (label, trend_id, p_id, p_platform),
-        )
+      _reassign_and_update_posts(cur, posts, trend_id, label)
 
       # 5. Check burst -> trigger velocity tracking
       _maybe_trigger_velocity(cur, trend_id)
@@ -369,30 +397,14 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
 
       label, risk_score, existing_post_count, existing_platforms, centroid_text, last_seen, lifecycle, verification = row
 
-          # Resurfacing detection
-      new_lifecycle = lifecycle
-      if last_seen:
-        days_since_last = (now - last_seen).days
-        if days_since_last > 14 and lifecycle not in ("Emergence",):
-          new_lifecycle = "Resurfacing"
-          logger.info("DB: trend %s resurfacing after %d days of inactivity", trend_id, days_since_last)
+      # Resurfacing detection
+      new_lifecycle = _check_resurfacing(trend_id, lifecycle, last_seen)
 
       # Weighted centroid merge
-      centroid_str = None
-      if centroid_text and new_centroid and len(new_centroid) > 0:
-        existing_centroid_vals = [float(x) for x in centroid_text.strip('[]').split(',')]
-        if len(existing_centroid_vals) == len(new_centroid):
-          total = existing_post_count + new_post_count
-          if total > 0:
-            merged = [
-              (existing_centroid_vals[i] * existing_post_count + new_centroid[i] * new_post_count) / total
-              for i in range(len(new_centroid))
-            ]
-            centroid_str = '[' + ','.join(str(v) for v in merged) + ']'
+      centroid_str = _merge_centroids(centroid_text, existing_post_count, new_centroid, new_post_count)
 
       # Merge platforms
       if isinstance(existing_platforms, str):
-        import json
         existing_platforms = json.loads(existing_platforms)
       merged_platforms = list(set((existing_platforms or []) + new_platforms))
 
@@ -425,33 +437,7 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
 
 
       # Update each post
-      for p in posts:
-        p_id = p.get("post_id")
-        p_platform = p.get("platform")
-        if not p_id or not p_platform:
-          continue
-
-        # Handle re-assignment
-        cur.execute(
-          "SELECT linked_trend_id FROM posts WHERE post_id = %s AND platform = %s",
-          (p_id, p_platform),
-        )
-        old = cur.fetchone()
-        if old and old[0] and old[0] != trend_id:
-          cur.execute(
-            "UPDATE trends SET post_count = GREATEST(post_count - 1, 0) WHERE trend_id = %s",
-            (old[0],),
-          )
-
-        cur.execute(
-          """
-            UPDATE posts
-            SET gate4_category  = %s,
-                linked_trend_id = %s
-            WHERE post_id = %s AND platform = %s
-          """,
-          (label, trend_id, p_id, p_platform),
-        )
+      _reassign_and_update_posts(cur, posts, trend_id, label)
 
       # Check burst -> trigger velocity tracking
       _maybe_trigger_velocity(cur, trend_id)
@@ -599,8 +585,7 @@ def write_safe_posts_to_db(posts: list[dict]) -> None:
         cur.execute(
           """
             UPDATE posts
-            SET gate4_relevant = FALSE,
-                gate4_category = 'LOW'
+            SET gate4_category = 'LOW'
             WHERE post_id = %s AND platform = %s
               AND gate4_category IS NULL
           """,

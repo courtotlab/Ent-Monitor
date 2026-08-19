@@ -4,8 +4,8 @@ import logging
 import sys
 from pathlib import Path
 
-# Add the root directory to path so imports work correctly
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# Add the root directory to path so imports work correctly when run as a script
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from layers.analysis.core.graph import run_analysis
 from layers.analysis.db.queries import fetch_unprocessed_posts

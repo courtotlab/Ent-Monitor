@@ -40,6 +40,7 @@ class EvidenceItem(TypedDict):
   snippet: str  # abstract or first ~300 chars
   is_relevant: bool
   contradicts_harm: bool
+  relevance_score: int
 
 
 #  Tool failure record
@@ -60,6 +61,7 @@ class AgentState(TypedDict):
   #  Active Cluster State
   cluster_id: str
   posts: list[dict]
+  trend_name: str
   search_context: str
   is_known_trend: bool
   matched_trend_id: str | None
@@ -93,9 +95,9 @@ class AgentState(TypedDict):
   reasoning: str
   needs_more_evidence: bool
   no_evidence_found: bool
-  downgrade_reason: str | None
-  downgraded_from_harmful: bool
   low_confidence: bool  # True when self-consistency check disagrees
+  mechanism_level_match: bool
+  slang_terms: list[str]
 
   #  Verification
   verify_finding: VerifyFinding | None

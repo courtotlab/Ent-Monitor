@@ -86,7 +86,11 @@ CREATE TABLE trends (
     lifecycle_status    TEXT NOT NULL DEFAULT 'Isolated incident', -- Emergence | Growth | Resurfacing | Declining | Latent | Isolated incident
     lifecycle_history   JSONB DEFAULT '[]',      -- Time-series of lifecycle status and post counts: [{"date": "...", "status": "...", "post_count": 0}]
     verification_status TEXT DEFAULT 'PROVISIONAL', -- CONFIRMED | PROVISIONAL | INSUFFICIENT_EVIDENCE
-    search_context      TEXT,                    -- Behavioral description used for evidence search and cluster matching
+    trend_name          TEXT,                    -- Short 4-5 word trend name
+    abstract            TEXT,                    -- LLM classification summary
+    search_context      TEXT,                    -- LLM search context
+    harm_mechanism      TEXT,                    -- LLM extracted harm mechanism
+    evidence            JSONB,                   -- List of relevant academic evidence
     centroid            vector(384),             -- SBERT embedding centroid for cross-run cluster matching
 
     -- Cluster-level velocity tracking (how fast this trend is spreading)

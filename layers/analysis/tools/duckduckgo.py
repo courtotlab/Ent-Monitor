@@ -74,12 +74,14 @@ def duckduckgo_search(
     items.append(
       EvidenceItem(
         source="duckduckgo",
+        source_tier="web_only",
         title=r.get("title", ""),
         url=r.get("href", r.get("link", "")),
         pmid=None,
         snippet=(r.get("body", r.get("snippet", "")))[:300],
         is_relevant=False,  # tagged by RESEARCH LLM later
         contradicts_harm=False,
+        relevance_score=0,
       )
     )
   return items

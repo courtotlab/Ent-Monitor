@@ -19,7 +19,8 @@ from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
 from layers.analysis.core.state import AgentState
-from layers.analysis.db.queries import check_if_trend_exists, find_nearest_trend
+from layers.analysis.db.queries import check_if_trend_exists, find_nearest_trend, write_safe_posts_to_db
+from layers.analysis.utils.batch_cluster_merge import execute_batch_cluster_merge
 from layers.shared.posts import get_engagement
 from layers.shared.trends import make_trend_id
 
@@ -28,11 +29,11 @@ logger = logging.getLogger(__name__)
 #  Tunable parameters (see eval harness for validation plan)
 MIN_CLUSTER_SIZE = 3
 MIN_SAMPLES = 2
-UMAP_N_COMPONENTS = 5
-UMAP_N_NEIGHBORS = 15
+UMAP_N_COMPONENTS = 12
+UMAP_N_NEIGHBORS = 10
 UMAP_MIN_DIST = 0.0
 CENTROID_MARGIN = 0.08  # relocate if cosine(post, other) > cosine(post, own) + margin
-MERGE_SIMILARITY_THRESHOLD = 0.65  # merge clusters whose centroids exceed this cosine sim
+MERGE_SIMILARITY_THRESHOLD = 0.95  # merge clusters whose centroids exceed this cosine sim
 
 # SBERT model - same one used by SbertFilter in preprocess
 SBERT_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -150,37 +151,30 @@ def _misclassification_check(
 
   Returns updated labels array (modifies in-place too).
   """
-  # HDBSCAN isn't perfect on the edges. If a post is technically inside Cluster A, 
-  # but its math vector is 8% closer to Cluster B, we manually yank it into Cluster B.
+  # Vectorized check for HDBSCAN edge cases. If a post is technically inside Cluster A, 
+  # but its math vector is > margin closer to Cluster B, we yank it into Cluster B.
   if len(centroids) < 2:
     return labels
 
-  centroid_ids = sorted(centroids.keys())
+  centroid_ids = np.array(sorted(centroids.keys()))
   centroid_matrix = np.array([centroids[c] for c in centroid_ids])
-  centroid_idx_map = {lbl: idx for idx, lbl in enumerate(centroid_ids)}
+
+  norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+  norms[norms == 0] = 1.0
+  normed_embeddings = embeddings / norms
+
+  sims = normed_embeddings @ centroid_matrix.T  # (N, K) cosine similarities
 
   for i in range(len(embeddings)):
-    emb = embeddings[i]
-    norm = np.linalg.norm(emb)
-    if norm > 0:
-      emb_normed = emb / norm
-    else:
+    if labels[i] == -1:
       continue
 
-    sims = centroid_matrix @ emb_normed  # cosine similarities
-    own_idx = centroid_idx_map.get(labels[i], -1)
-    
-    if own_idx < 0:
-      # It's a noise post.
-      continue
+    own_idx = np.searchsorted(centroid_ids, labels[i])
+    own_sim = sims[i, own_idx]
 
-    own_sim = sims[own_idx]
-    best_other_idx = -1
-    best_other_sim = -1.0
-    for j, sim in enumerate(sims):
-      if j != own_idx and sim > best_other_sim:
-        best_other_sim = sim
-        best_other_idx = j
+    sims[i, own_idx] = -np.inf
+    best_other_idx = np.argmax(sims[i])
+    best_other_sim = sims[i, best_other_idx]
 
     if best_other_sim > own_sim + CENTROID_MARGIN:
       old_label = labels[i]
@@ -188,11 +182,7 @@ def _misclassification_check(
       labels[i] = new_label
       logger.debug(
         "Relocated post %d: cluster %d → %d (own=%.3f, other=%.3f)",
-        i,
-        old_label,
-        new_label,
-        own_sim,
-        best_other_sim,
+        i, old_label, new_label, own_sim, best_other_sim,
       )
 
   return labels
@@ -226,11 +216,8 @@ def _merge_similar_clusters(
     centroid_matrix = np.array([centroids[c] for c in cluster_ids])
     sim_matrix = centroid_matrix @ centroid_matrix.T
 
-    # Zero out diagonal and lower triangle
-    np.fill_diagonal(sim_matrix, -1.0)
-    for r in range(len(cluster_ids)):
-      for c_idx in range(r):
-        sim_matrix[r, c_idx] = -1.0
+    # Zero out diagonal and lower triangle to avoid self-matches and duplicates
+    sim_matrix[np.tril_indices_from(sim_matrix)] = -np.inf
 
     best_idx = np.unravel_index(np.argmax(sim_matrix), sim_matrix.shape)
     best_sim = sim_matrix[best_idx]
@@ -246,6 +233,7 @@ def _merge_similar_clusters(
 
       labels[labels == drop] = keep
       del centroids[drop]
+      
       # Recompute the merged centroid
       mask = labels == keep
       new_centroid = embeddings[mask].mean(axis=0)
@@ -277,22 +265,23 @@ Your job is to VALIDATE, not to cluster from scratch.
 """
 
 _CLUSTER_PROMPT = """\
+You are an expert medical data validation assistant. Your job is to audit a cluster of user posts to ensure absolute anatomical and medical uniformity.
+
+CRITICAL RULE: A cluster must only contain posts targeting the EXACT same body part/organ system and the same core medical condition.
+
 These {n} posts were grouped together by embedding similarity.
 
 {posts_xml}
 
-Questions:
-(a) Do ALL these posts describe the same ENT-relevant behavior? If not, which \
-post IDs should be split out?
-CRITICAL: Look out for "teaser", "reply", or "update" posts (e.g., "try this before \
-you go to urgent care", "results for the earache hack"). These usually belong to a \
-specific viral remedy trend. If they are lumped in with a cluster of generic \
-educational/clinical posts, they MUST be split out.
-(b) Name this cluster behaviorally (e.g., "cotton bud ear cleaning challenge", \
-"garlic in nose remedy"). Keep it short and specific.
-(c) Write a 1-2 sentence search_context that RESEARCH should use to find \
-academic evidence about this behavior's impact on pediatric ENT health.
-(d) Assign a triage_flag: "likely_harmful", "unclear", or "likely_safe".
+Step-by-step analysis:
+1. For EACH post, explicitly extract and list:
+   - Primary Anatomy (e.g., Ear Canal, Tonsils, Nasal Cavity)
+   - Core Action/Condition (e.g., Foreign Object Insertion, Inflammation, Congestion)
+2. Determine the "Dominant Anatomy" of the cluster based on the majority of posts.
+3. Identify any post that does NOT perfectly match the Dominant Anatomy. You must list these post_ids in `split_post_ids` for ejection. Also split out "teaser" or "update" posts that belong to a viral trend but are lumped with generic clinical posts.
+4. Name this cluster behaviorally (e.g., "condom challenge", "dragon breath challenge"). Keep it short (max 4-5 words).
+5. Write a 1-2 sentence search_context (under 50-100 words) that RESEARCH should use to find academic evidence about this behavior's impact on pediatric ENT health.
+6. Assign a triage_flag: "likely_harmful", "unclear", or "likely_safe".
 """
 
 _UNCLASSIFIED_PROMPT = """\
@@ -305,16 +294,23 @@ The existing named clusters are:
 Questions:
 (a) Can any of these posts attach to one of the existing clusters by behavioral \
 meaning (not keyword match)?
-(b) Do any of the remaining posts form their own new group? Name it if so.
+(b) Do any of the remaining posts form their own new group? Name it if so (max 4-5 words, uniquely identifying).
 (c) The rest stay UNCLASSIFIED.
 """
 
+class PostAnalysis(BaseModel):
+  post_id: str
+  anatomy: str = Field(description="Primary Anatomy")
+  condition: str = Field(description="Core Action/Condition")
+
 class ClusterValidation(BaseModel):
-  confirmed: bool
+  analysis: list[PostAnalysis] = Field(description="Step 1 analysis for EACH post")
+  dominant_anatomy: str = Field(description="Step 2 dominant anatomy")
+  split_post_ids: list[str] = Field(description="Step 3 post IDs to split")
+  confirmed: bool = Field(description="Set to true unless the entire cluster is invalid")
   cluster_name: str
   search_context: str
   triage_flag: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="One of: likely_harmful, unclear, likely_safe")
-  split_post_ids: list[str]
 
 class Attachment(BaseModel):
   post_id: str
@@ -427,7 +423,6 @@ def observe_node(state: AgentState) -> dict:
       "posts": cluster_posts
     })
 
-  from layers.analysis.utils.batch_cluster_merge import execute_batch_cluster_merge
   merged_output = execute_batch_cluster_merge(merge_input)
 
   # Reconstruct cluster_groups and centroids
@@ -447,11 +442,8 @@ def observe_node(state: AgentState) -> dict:
   def _centroid_sim(idx: int, lbl: int) -> float:
     if lbl == -1 or lbl not in centroids:
       return 0.0
-    emb = embeddings[idx]
-    norm = np.linalg.norm(emb)
-    if norm > 0:
-      emb = emb / norm
-    return float(centroids[lbl] @ emb)
+    # embeddings are already L2 normalized by SBERT (normalize_embeddings=True)
+    return float(centroids[lbl] @ embeddings[idx])
 
   #  Step 6: LLM validation per cluster
   validated_clusters: list[dict[str, Any]] = []
@@ -562,16 +554,27 @@ def observe_node(state: AgentState) -> dict:
         ng_centroid = ng_centroid.tolist()
         
         new_id = f"cluster_new_{len(validated_clusters)}"
+        
+        # Security: run prompt injection check on noise-generated clusters
+        new_search_context = ng.get("search_context", "")
+        new_cluster_name = ng.get("cluster_name", new_id)
+        new_triage_flag = ng.get("triage_flag", "unclear")
+        
+        for field_val in (new_cluster_name, new_search_context):
+          if check_output_for_injection(field_val, new_id):
+            new_triage_flag = "unclear"  # force human review
+            break
+
         validated_clusters.append(
           {
             "cluster_id": new_id,
             "cluster_type": "behavioral",
             "posts": ng_posts,
-            "search_context": ng.get("search_context", ""),
-            "triage_flag": ng.get("triage_flag", "unclear"),
-            "is_known_trend": check_if_trend_exists(ng.get("cluster_name", new_id)),
+            "search_context": new_search_context,
+            "triage_flag": new_triage_flag,
+            "is_known_trend": check_if_trend_exists(new_cluster_name),
             "centroid": ng_centroid,
-            "cluster_name": ng.get("cluster_name", new_id),
+            "cluster_name": new_cluster_name,
             "deterministic_trend_id": make_trend_id(get_canonical_caption(ng_posts)),
           }
         )
@@ -591,7 +594,6 @@ def observe_node(state: AgentState) -> dict:
     if unc_posts:
       logger.info("OBSERVE: Writing %d unclassified noise posts to DB as SAFE", len(unc_posts))
       try:
-        from layers.analysis.db.queries import write_safe_posts_to_db
         write_safe_posts_to_db(unc_posts)
       except Exception as exc:
         logger.warning("OBSERVE: failed to write safe posts to DB - %s", exc)

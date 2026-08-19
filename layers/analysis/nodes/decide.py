@@ -6,10 +6,12 @@ Sets tool_degraded flag and handles LOW post DB writes.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from layers.analysis.core.state import AgentState
-from layers.analysis.db.queries import write_cluster_to_db, write_safe_posts_to_db
+from layers.analysis.db.queries import write_cluster_to_db
+from layers.analysis.utils.formatters import build_cluster_json
 from layers.shared.paths import get_run_dir
 from layers.shared.posts import get_engagement
 
@@ -45,47 +47,13 @@ def decide_node(state: AgentState) -> dict:
   if label == "LOW" and not state.get("low_confidence", False):
     _log_skipped_low(state)
     try:
-      write_safe_posts_to_db(posts)
-      minimal_cluster_json = {
-        "run_id": state.get("run_id"),
-        "cluster_id": cluster_id,
-        "trend": {
-          "trend_name": state.get("search_context") or cluster_id,
-          "is_known_trend": state.get("is_known_trend", False),
-          "matched_trend_id": state.get("matched_trend_id"),
-          "post_count": len(posts),
-          "platforms": list(set(p.get("platform", "unknown") for p in posts)),
-        },
-        "classification": {
-          "label": label,
-          "lifecycle": state.get("lifecycle", "Isolated incident"),
-          "verification": state.get("verification", "PROVISIONAL"),
-          "risk_score": state.get("risk_score", 0.0),
-        },
-        "posts": posts,
-        "search_context": state.get("search_context", ""),
-        "reasoning": {
-          "why_this_label": state.get("reasoning", ""),
-        },
-        "evidence": [
-          {
-            "source": e["source"],
-            "pmid": e.get("pmid"),
-            "title": e["title"],
-            "url": e["url"],
-            "relevance_note": e.get("snippet", "")[:150],
-            "is_relevant": e.get("is_relevant", False),
-            "contradicts_harm": e.get("contradicts_harm", False),
-          }
-          for e in state.get("evidence", [])
-        ],
-      }
+      minimal_cluster_json = build_cluster_json(
+          state=state,
+          abstract="No detailed report generated (LOW risk).",
+      )
       write_cluster_to_db(minimal_cluster_json, centroid=state.get("centroid"))
       
       # Also save as a standalone JSON file for manual review
-      import json
-
-      from layers.shared.paths import get_run_dir
       output_dir = get_run_dir(state.get("run_id"), "final")
       output_dir.mkdir(parents=True, exist_ok=True)
       output_path = output_dir / f"{cluster_id}_low.json"
@@ -105,9 +73,6 @@ def decide_node(state: AgentState) -> dict:
             "confidence": state.get("confidence", 1.0),
             "risk_score": state.get("risk_score", 0.0),
             "evidence_status": "skipped_low",
-        },
-        "flags": {
-            "low_confidence": False,
         }
     })
 
@@ -118,7 +83,6 @@ def decide_node(state: AgentState) -> dict:
 
 def _log_skipped_low(state: AgentState) -> None:
   """Append skipped LOW clusters to an auditable JSON file."""
-  import json
   run_id = state.get("run_id", "unknown_run")
   output_dir = get_run_dir(run_id, "final")
   output_dir.mkdir(parents=True, exist_ok=True)
@@ -126,7 +90,7 @@ def _log_skipped_low(state: AgentState) -> None:
 
   entry = {
     "cluster_id": state.get("cluster_id", "unknown"),
-    "trend_name": state.get("search_context", "Unknown trend"),
+    "trend_name": state.get("trend_name", "Unknown trend"),
     "post_count": len(state.get("posts", [])),
     "risk_score": state.get("risk_score", 0.0),
     "evidence_score": state.get("evidence_score", 0.0),

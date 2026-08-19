@@ -36,13 +36,15 @@ def compute_evidence_score(state: AgentState) -> float:
   other_count = sum(1 for e in evidence if e["source"] != "pubmed")
   source_score = min(pubmed_count * 0.4 + other_count * 0.15, 1.0)
 
-  relevant_count = sum(1 for e in evidence if e.get("is_relevant", False))
-  relevance_score = min(relevant_count / max(len(evidence), 1), 1.0)
+  # Use the new 1-10 relevance_score to calculate a much more accurate ratio!
+  total_relevance = sum(e.get("relevance_score", 0) for e in evidence if e.get("is_relevant", False))
+  max_possible = len(evidence) * 10
+  relevance_ratio = min(total_relevance / max_possible, 1.0)
 
   contradictory = sum(1 for e in evidence if e.get("contradicts_harm", False))
   contradiction_penalty = min(contradictory * 0.15, 0.4)
 
-  raw = (0.55 * source_score) + (0.45 * relevance_score) - contradiction_penalty
+  raw = (0.55 * source_score) + (0.45 * relevance_ratio) - contradiction_penalty
   return max(0.0, min(raw, 1.0))
 
 
@@ -130,35 +132,35 @@ def route_after_classify(state: AgentState) -> Command:
 #  Route: after VERIFY
 def route_after_verify(state: AgentState) -> Command:
   """Edges (3) (4) - VERIFY routes to DECIDE, RESEARCH, or CLASSIFY."""
-  finding = state["verify_finding"]
-  retries_left = state["verify_retries_left"] > 0
+  finding = state.get("verify_finding") or {}
+  retries_left = state.get("verify_retries_left", 0) > 0
 
   # A citation that couldn't be checked (tool failure) is NOT a confirmed-bad
   # PMID - must not trigger edge (3) or consume verify_retries_left.
   if finding.get("citation_check_failed"):
     return Command(goto="decide")
 
-  if finding["citation_valid"] is False or not finding["citation_relevant"]:
+  if finding.get("citation_valid") is False or not finding.get("citation_relevant"):
     if retries_left:
       return Command(
         goto="research",
         update={
           "evidence_gap": EvidenceGap(
-            missing=finding["notes"],
+            missing=finding.get("notes", "Citation invalid or irrelevant."),
             suggested_query=f"{state.get('harm_hypothesis', state.get('search_context', ''))} alternative citation",
             suggested_tool="pubmed_search",
             reason="bad_citation",
           ),
-          "verify_retries_left": state["verify_retries_left"] - 1,
+          "verify_retries_left": state.get("verify_retries_left", 1) - 1,
         },
       )
     return Command(goto="decide")
 
-  if not finding["label_consistent"] and retries_left:
+  if not finding.get("label_consistent") and retries_left:
     return Command(
       goto="classify",
       update={
-        "verify_retries_left": state["verify_retries_left"] - 1,
+        "verify_retries_left": state.get("verify_retries_left", 1) - 1,
       },
     )
 
