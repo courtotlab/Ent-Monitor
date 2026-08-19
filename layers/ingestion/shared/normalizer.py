@@ -1,7 +1,7 @@
 import datetime
 import re
 
-from layers.ingestion.models import NormalizedPost
+from layers.ingestion.shared.models import NormalizedPost
 
 
 def now_iso() -> str:
@@ -40,10 +40,10 @@ def norm_instagram(post_data: dict, source: str, creator_id: str) -> NormalizedP
   )
 
 
-def norm_reddit(post_data, subreddit: str, is_praw: bool) -> NormalizedPost:
+def norm_reddit(post_data, subreddit: str, is_praw: bool, source_override: str = None) -> NormalizedPost:
   # Collapse PRAW object vs dict access into shared variables
   post_id = str(post_data.id) if is_praw else str(post_data.get("id", ""))
-  source = "reddit_stream" if is_praw else "reddit_comm"
+  source = source_override or "reddit"
   
   if is_praw:
     creator = str(post_data.author.name if post_data.author else "deleted")
@@ -105,14 +105,14 @@ def norm_tiktok(post_data: dict, source: str, creator_id: str) -> NormalizedPost
   )
 
 
-def norm_youtube(video_data: dict, creator_handle: str) -> NormalizedPost:
+def norm_youtube(video_data: dict, creator_handle: str, source_override: str = None) -> NormalizedPost:
   caption = f"{video_data.get('title', '')}\n\n{video_data.get('text', '')}".strip()
   tags = list(dict.fromkeys(re.findall(r"#(\w+)", caption)))
 
   return NormalizedPost(
     post_id=str(video_data.get("id", "")),
     platform="youtube",
-    source="creator_monitor",
+    source=source_override or "creator_monitor",
     creator_id=str(video_data.get("channelName", creator_handle)),
     caption_text=caption,
     hashtags=tags or None,

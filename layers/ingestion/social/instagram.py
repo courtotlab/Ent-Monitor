@@ -1,5 +1,6 @@
-from layers.ingestion.models import NormalizedPost
-from layers.ingestion.normalizer import norm_instagram, extract_id
+import random
+from layers.ingestion.shared.models import NormalizedPost
+from layers.ingestion.shared.normalizer import norm_instagram, extract_id
 
 
 async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, limit_engagers: int, posts_per_engager: int) -> list[NormalizedPost]:
@@ -71,9 +72,11 @@ async def scrape_instagram_explore(client, limit_posts: int) -> list[NormalizedP
   posts = []
 
   try:
+    explore_tags = ["trending", "explore", "viral", "foryou", "reels", "foryoupage"]
+    random_tag = random.choice(explore_tags)
     run = await client.actor("apify/instagram-scraper").call(
       run_input={
-        "directUrls": ["https://www.instagram.com/explore/tags/trending/"],
+        "directUrls": [f"https://www.instagram.com/explore/tags/{random_tag}/"],
         "resultsType": "posts",
         "resultsLimit": limit_posts,
         "proxyConfiguration": {"useApifyProxy": True},

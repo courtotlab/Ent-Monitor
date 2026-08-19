@@ -1,14 +1,15 @@
 import asyncio
 import os
+import random
 
 import praw
 import requests
 
-from layers.ingestion.models import NormalizedPost
-from layers.ingestion.normalizer import norm_reddit
+from layers.ingestion.shared.models import NormalizedPost
+from layers.ingestion.shared.normalizer import norm_reddit
 
 
-def scrape_reddit_sync(subreddits: list[str], limit_posts: int) -> list[NormalizedPost]:
+def scrape_reddit_sync(subreddits: list[str], limit_posts: int, source_override: str = None) -> list[NormalizedPost]:
   if not os.getenv("REDDIT_CLIENT_ID") or not os.getenv("REDDIT_CLIENT_SECRET"):
     return []
 
@@ -30,7 +31,7 @@ def scrape_reddit_sync(subreddits: list[str], limit_posts: int) -> list[Normaliz
           for submission in fetcher(limit=limit_posts):
             if submission.id not in seen:
               seen.add(submission.id)
-              posts.append(norm_reddit(submission, sub, is_praw=True))
+              posts.append(norm_reddit(submission, sub, is_praw=True, source_override=source_override))
               sub_count += 1
 
             if sub_count >= limit_posts:
@@ -61,7 +62,7 @@ def scrape_reddit_sync(subreddits: list[str], limit_posts: int) -> list[Normaliz
             post_id = post_data.get("id")
             if post_id and post_id not in seen:
               seen.add(post_id)
-              posts.append(norm_reddit(post_data, sub, is_praw=False))
+              posts.append(norm_reddit(post_data, sub, is_praw=False, source_override=source_override))
               sub_count += 1
 
             if sub_count >= limit_posts:
@@ -76,5 +77,10 @@ def scrape_reddit_sync(subreddits: list[str], limit_posts: int) -> list[Normaliz
 
   return posts
 
-async def scrape_reddit(subreddits: list[str], limit_posts: int) -> list[NormalizedPost]:
-  return await asyncio.to_thread(scrape_reddit_sync, subreddits, limit_posts)
+async def scrape_reddit(subreddits: list[str], limit_posts: int, source_override: str = None) -> list[NormalizedPost]:
+  return await asyncio.to_thread(scrape_reddit_sync, subreddits, limit_posts, source_override)
+
+async def scrape_reddit_explore(limit_posts: int) -> list[NormalizedPost]:
+  explore_subs = ["popular", "all", "todayilearned", "videos", "news", "aww", "pics", "parenting", "askreddit"]
+  random_sub = random.choice(explore_subs)
+  return await scrape_reddit([random_sub], limit_posts, source_override="explore_feed")

@@ -7,8 +7,8 @@ from apify import Actor
 from psycopg2.extras import Json
 from trendspyg import download_google_trends_explore, download_google_trends_rss
 
-from layers.ingestion.instagram import scrape_instagram_search
-from layers.ingestion.tiktok import scrape_tiktok_search
+from layers.ingestion.social.instagram import scrape_instagram_search
+from layers.ingestion.social.tiktok import scrape_tiktok_search
 from layers.preprocess.queries import insert_post
 from layers.preprocess.semantic_filter import SbertFilter
 from layers.shared.db import get_connection

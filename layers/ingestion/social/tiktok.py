@@ -1,23 +1,25 @@
-from layers.ingestion.models import NormalizedPost
-from layers.ingestion.normalizer import extract_id, norm_tiktok
+import random
+from layers.ingestion.shared.models import NormalizedPost
+from layers.ingestion.shared.normalizer import extract_id, norm_tiktok
 
 
 async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_engagers: int, posts_per_engager: int) -> list[NormalizedPost]:
   posts = []
-  if not handles: return posts
+  valid_handles = [u for u in handles if u]
+  if not valid_handles: return posts
 
   post_urls = []
   try:
     run = await client.actor("clockworks/tiktok-scraper").call(
       run_input={
-        "profiles": [u for u in handles if u],
+        "profiles": valid_handles,
         "resultsPerPage": limit_posts,
         "sortBy": "createTime",
       }
     )
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
       url = item.get("webVideoUrl") or item.get("videoUrl")
-      if url and len(post_urls) < 5 * len(handles):
+      if url and len(post_urls) < 5 * len(valid_handles):
         post_urls.append(url)
       if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
         posts.append(norm_tiktok(item, "creator_monitor", item.get("author", {}).get("uniqueId", "")))
@@ -28,12 +30,12 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
     return posts
 
   engagers = set()
-  handle_set = {extract_id(u).lower() for u in handles if u}
+  handle_set = {extract_id(u).lower() for u in valid_handles}
 
   try:
     run = await client.actor("clockworks/tiktok-scraper").call(
       run_input={
-        "postUrls": post_urls,
+        "postURLs": post_urls,
         "resultsType": "comments",
         "resultsPerPage": limit_engagers,
       }
@@ -69,9 +71,11 @@ async def scrape_tiktok_explore(client, limit_posts: int) -> list[NormalizedPost
   posts = []
 
   try:
+    explore_tags = ["fyp", "foryou", "foryoupage", "trending", "viral", "explore"]
+    random_tag = random.choice(explore_tags)
     run = await client.actor("clockworks/tiktok-scraper").call(
       run_input={
-        "hashtags": ["fyp"],
+        "hashtags": [random_tag],
         "resultsPerPage": limit_posts,
       }
     )
