@@ -2,17 +2,10 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
 
 from layers.shared.db import get_connection
 from layers.shared.embedding import deserialize
-
-
-def _parse_ts(value: str | None) -> datetime | None:
-  if not value:
-    return None
-  return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
 
 def fetch_active_anchors(sources: list[str] | None = None) -> list[tuple[int, str, list[float]]]:
   """Fetch active SBERT anchors.
@@ -45,14 +38,10 @@ def fetch_active_anchors(sources: list[str] | None = None) -> list[tuple[int, st
 
 
 def increment_anchor_match_counts(anchor_ids: list[int]) -> None:
-  """Increment match_count for each anchor that pulled in at least one passing post this batch.
-
-  Takes a list of anchor IDs (may contain duplicates - one per matched post).
-  """
+  """Increment match_count for each anchor that pulled in at least one passing post this batch."""
   if not anchor_ids:
     return
   with get_connection() as conn, conn.cursor() as cur:
-    # Batch-update: count occurrences in Python, then UPDATE per anchor
     counts: dict[int, int] = {}
     for aid in anchor_ids:
       if aid is not None:
@@ -68,96 +57,51 @@ def increment_anchor_match_counts(anchor_ids: list[int]) -> None:
       )
 
 
-def upsert_creator(creator_id: str | None, platform: str) -> None:
-  if not creator_id:
+def fetch_unprocessed_posts(limit: int = 1000) -> list[dict[str, Any]]:
+  """Fetch posts that haven't been preprocessed (sbert_score IS NULL)."""
+  with get_connection() as conn, conn.cursor() as cur:
+    cur.execute(
+      """
+      SELECT post_id, platform, source, creator_id, caption_text, transcript_text,
+             hashtags, metadata, likes, comments, shares, views,
+             collected_at, posted_at
+      FROM posts
+      WHERE sbert_score IS NULL
+      LIMIT %s
+      """,
+      (limit,),
+    )
+    cols = [desc[0] for desc in cur.description]
+    posts = []
+    for row in cur.fetchall():
+        post_dict = dict(zip(cols, row))
+        post_dict["engagement"] = {
+            "likes": post_dict.pop("likes"),
+            "comments": post_dict.pop("comments"),
+            "shares": post_dict.pop("shares"),
+            "views": post_dict.pop("views"),
+        }
+        if post_dict["collected_at"]: post_dict["collected_at"] = post_dict["collected_at"].isoformat()
+        if post_dict["posted_at"]: post_dict["posted_at"] = post_dict["posted_at"].isoformat()
+        posts.append(post_dict)
+    return posts
+
+
+def update_preprocessed_posts(updates: list[tuple[str, str, float, int | None]]) -> None:
+  """Batch update sbert_score and matched_anchor_id.
+  Updates is a list of (post_id, platform, sbert_score, matched_anchor_id).
+  """
+  if not updates:
     return
   with get_connection() as conn, conn.cursor() as cur:
-    cur.execute(
-      """
-        INSERT INTO creators (creator_id, platform)
-        VALUES (%s, %s)
-        ON CONFLICT (creator_id, platform) DO NOTHING
-      """,
-      (creator_id, platform),
-    )
-
-
-def insert_post(
-  post: dict[str, Any],
-  sbert_score: float | None = None,
-  matched_anchor_id: int | None = None,
-) -> bool:
-  """Insert post with ON CONFLICT DO NOTHING. Returns True if inserted."""
-  engagement = post.get("engagement") or {}
-  hashtags = post.get("hashtags")
-  hashtags_value = Json(hashtags) if hashtags is not None else None
-  metadata_value = Json(post.get("metadata") or {})
-
-  upsert_creator(post.get("creator_id"), post["platform"])
-
-  transcript = post.get("transcript_text")
-  if isinstance(transcript, (list, dict)):
-    transcript = json.dumps(transcript)
-
-  with get_connection() as conn, conn.cursor() as cur:
-    cur.execute(
-      """
-        INSERT INTO posts (
-          post_id, platform, source,
-          creator_id, caption_text, transcript_text, hashtags, metadata,
-          likes, comments, shares, views,
-          collected_at, posted_at, sbert_score, matched_anchor_id
-        ) VALUES (
-          %s, %s, %s,
-          %s, %s, %s, %s, %s,
-          %s, %s, %s, %s,
-          %s, %s, %s, %s
-        )
-        ON CONFLICT (post_id, platform) DO NOTHING
-        RETURNING post_id
+    execute_values(
+        cur,
+        """
+        UPDATE posts
+        SET sbert_score = data.sbert_score::real,
+            matched_anchor_id = data.matched_anchor_id::integer
+        FROM (VALUES %s) AS data (post_id, platform, sbert_score, matched_anchor_id)
+        WHERE posts.post_id = data.post_id AND posts.platform = data.platform
         """,
-      (
-        post["post_id"],
-        post["platform"],
-        post["source"],
-        post.get("creator_id"),
-        post.get("caption_text"),
-        transcript,
-        hashtags_value,
-        metadata_value,
-        int(engagement.get("likes") or 0),
-        int(engagement.get("comments") or 0),
-        int(engagement.get("shares") or 0),
-        int(engagement.get("views") or 0),
-        _parse_ts(post.get("collected_at")) or datetime.now(UTC),
-        _parse_ts(post.get("posted_at")),
-        sbert_score,
-        matched_anchor_id,
-      ),
-    )
-    return cur.fetchone() is not None
-
-
-def update_sbert_score(post_id: str, platform: str, score: float) -> None:
-  with get_connection() as conn, conn.cursor() as cur:
-    cur.execute(
-      """
-        UPDATE posts SET sbert_score = %s
-        WHERE post_id = %s AND platform = %s
-      """,
-      (score, post_id, platform),
-    )
-
-
-def merge_post_metadata(post_id: str, platform: str, new_metadata: dict[str, Any]) -> None:
-  if not new_metadata:
-    return
-  with get_connection() as conn, conn.cursor() as cur:
-    cur.execute(
-      """
-        UPDATE posts 
-        SET metadata = metadata || %s::jsonb
-        WHERE post_id = %s AND platform = %s
-      """,
-      (Json(new_metadata), post_id, platform),
+        updates,
     )

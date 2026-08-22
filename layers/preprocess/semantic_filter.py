@@ -4,7 +4,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 MODEL_NAME = "all-MiniLM-L6-v2"
-SBERT_THRESHOLD = 0.38
+SBERT_THRESHOLD = 0.3
 
 
 class SbertFilter:
@@ -41,30 +41,25 @@ class SbertFilter:
     return [float(score) for score in max_scores]
 
   def score_posts(self, posts: list[dict[str, Any]]) -> list[tuple[dict[str, Any], float, int | None]]:
-    """Score posts against anchors.
-
-    Returns a list of (post, max_score, best_anchor_id) triples.
-    best_anchor_id is None only if no anchors are loaded.
-    """
+    """Score posts against anchors."""
     if self._anchor_matrix is None:
       raise RuntimeError("Anchors not loaded. Call load_anchors() first.")
 
-    texts = [(post.get("caption_text") or "").strip() for post in posts]
-    if not texts:
+    texts = [(p.get("caption_text") or "").strip() for p in posts]
+    if not any(texts):
       return []
 
-    embeddings = self.model.encode(
-      texts, convert_to_numpy=True, normalize_embeddings=True
-    )
-    scores = embeddings @ self._anchor_matrix.T  # shape: (n_posts, n_anchors)
+    embeddings = self.model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+    scores = embeddings @ self._anchor_matrix.T
+    
     max_indices = np.argmax(scores, axis=1)
     max_scores = scores[np.arange(len(posts)), max_indices]
-
+    
     results = []
     for post, score, anchor_idx in zip(posts, max_scores, max_indices):
       best_anchor_id = self._anchor_ids[int(anchor_idx)] if self._anchor_ids else None
       results.append((post, float(score), best_anchor_id))
-
+      
     return results
 
   @staticmethod
