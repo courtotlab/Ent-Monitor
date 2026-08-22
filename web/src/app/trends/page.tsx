@@ -1,5 +1,5 @@
 import { AppNavbar } from "@/components/layout/app-navbar"
-import { TrendsTable } from "@/components/report/trends-table"
+import { TrendsTable } from "@/components/trends/trends-table"
 
 export default function TrendsPage() {
   return (

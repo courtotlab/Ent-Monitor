@@ -43,8 +43,8 @@ CREATE TABLE posts (
 
     PRIMARY KEY (post_id, platform),
     CONSTRAINT chk_posts_source CHECK (source IN (
-        'creator_monitor', 'engager', 'reddit_stream',
-        'explore_feed', 'gtrends_search', 'gdelt_news', 'reddit_comm'))
+        'creator_monitor', 'engager', 'reddit',
+        'explore_feed', 'gtrends_search', 'gdelt_news'))
 );
 
 CREATE INDEX idx_posts_collected          ON posts(collected_at);
@@ -126,7 +126,7 @@ CREATE TABLE trend_signals (
     dismissed           BOOLEAN DEFAULT FALSE,   -- TRUE if a clinician dismissed this signal
     detected_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT chk_signals_type CHECK (signal_type IN ('news_match', 'slow_spread'))
+    CONSTRAINT chk_signals_type CHECK (signal_type IN ('news_match', 'slow_spread', 'gt_spike'))
 );
 
 CREATE INDEX idx_signals_pending      ON trend_signals(search_status) WHERE search_status = 'pending';

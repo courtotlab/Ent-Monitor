@@ -41,53 +41,18 @@ def get_dashboard_stats():
       )
       active_creators = cur.fetchone()[0]
 
-      # 5. Posts analyzed (Gate 4 categorization complete)
-      cur.execute(
-        "SELECT COUNT(*) FROM posts WHERE gate4_category IS NOT NULL"
-      )
-      posts_analyzed = cur.fetchone()[0]
-
-      # 6. Pending signals count
-      cur.execute(
-        "SELECT COUNT(*) FROM trend_signals WHERE search_status = 'pending' AND dismissed = FALSE"
-      )
-      pending_signals = cur.fetchone()[0]
-
-      # 7. Latest agent run
-      cur.execute(
-        """
-        SELECT run_id, status, started_at, completed_at, duration_seconds
-        FROM agent_runs
-        ORDER BY started_at DESC
-        LIMIT 1
-        """
-      )
-      last_run_row = cur.fetchone()
-      last_run = None
-      if last_run_row:
-        last_run = {
-          "run_id": last_run_row[0],
-          "status": last_run_row[1],
-          "started_at": last_run_row[2].isoformat() if last_run_row[2] else None,
-          "completed_at": last_run_row[3].isoformat() if last_run_row[3] else None,
-          "duration_seconds": last_run_row[4],
-        }
-
       return {
         "harmful_count": harmful_count,
         "concerning_count": concerning_count,
         "total_trends_classified": total_trends_classified,
         "active_creators": active_creators,
-        "posts_analyzed": posts_analyzed,
-        "pending_signals": pending_signals,
-        "last_run": last_run,
       }
   except Exception as exc:
     logger.error("Failed to fetch dashboard stats: %s", exc)
     raise HTTPException(status_code=500, detail=str(exc))
 
 
-#   Dashboard Chart                     
+# Dashboard Chart                     
 
 @router.get("/dashboard/chart")
 def get_dashboard_chart():
@@ -136,7 +101,7 @@ def get_dashboard_recent_trends():
         SELECT trend_id, label, risk_score, post_count, platforms,
                lifecycle_status,
                first_detected_at, last_seen_at,
-               search_context, verification_status, discovery_source,
+               trend_name, abstract, verification_status, discovery_source,
                velocity_growth_rate, velocity_checked_at
         FROM trends
         ORDER BY GREATEST(first_detected_at, COALESCE(last_seen_at, first_detected_at)) DESC
@@ -162,11 +127,12 @@ def get_dashboard_recent_trends():
           "lifecycle_status": row[5],
           "first_detected_at": row[6].isoformat() if row[6] else None,
           "last_seen_at": row[7].isoformat() if row[7] else None,
-          "search_context": row[8],
-          "verification_status": row[9],
-          "discovery_source": row[10],
-          "velocity_growth_rate": row[11],
-          "velocity_checked_at": row[12].isoformat() if row[12] else None,
+          "trend_name": row[8],
+          "abstract": row[9],
+          "verification_status": row[10],
+          "discovery_source": row[11],
+          "velocity_growth_rate": row[12],
+          "velocity_checked_at": row[13].isoformat() if row[13] else None,
         })
 
       return {"trends": trends}
@@ -187,7 +153,7 @@ def get_trends():
         SELECT trend_id, label, risk_score, post_count, platforms,
                lifecycle_status,
                first_detected_at, last_seen_at,
-               search_context, verification_status,
+               trend_name, abstract, verification_status,
                discovery_source, velocity_growth_rate, velocity_checked_at
         FROM trends
         ORDER BY last_seen_at DESC NULLS LAST, first_detected_at DESC
@@ -212,11 +178,12 @@ def get_trends():
           "lifecycle_status": row[5],
           "first_detected_at": row[6].isoformat() if row[6] else None,
           "last_seen_at": row[7].isoformat() if row[7] else None,
-          "search_context": row[8],
-          "verification_status": row[9],
-          "discovery_source": row[10],
-          "velocity_growth_rate": row[11],
-          "velocity_checked_at": row[12].isoformat() if row[12] else None,
+          "trend_name": row[8],
+          "abstract": row[9],
+          "verification_status": row[10],
+          "discovery_source": row[11],
+          "velocity_growth_rate": row[12],
+          "velocity_checked_at": row[13].isoformat() if row[13] else None,
         })
 
       return {"trends": trends}
@@ -238,8 +205,8 @@ def get_trend_details(trend_id: str):
         SELECT trend_id, label, risk_score, post_count, platforms,
                lifecycle_status,
                first_detected_at, last_seen_at,
-               search_context, verification_status,
-               discovery_source, velocity_growth_rate, velocity_checked_at
+               trend_name, abstract, verification_status,
+               discovery_source, velocity_growth_rate, velocity_checked_at, evidence
         FROM trends
         WHERE trend_id = %s
         """,
@@ -264,17 +231,19 @@ def get_trend_details(trend_id: str):
         "lifecycle_status": trend_row[5],
         "first_detected_at": trend_row[6].isoformat() if trend_row[6] else None,
         "last_seen_at": trend_row[7].isoformat() if trend_row[7] else None,
-        "search_context": trend_row[8],
-        "verification_status": trend_row[9],
-        "discovery_source": trend_row[10],
-        "velocity_growth_rate": trend_row[11],
-        "velocity_checked_at": trend_row[12].isoformat() if trend_row[12] else None,
+        "trend_name": trend_row[8],
+        "abstract": trend_row[9],
+        "verification_status": trend_row[10],
+        "discovery_source": trend_row[11],
+        "velocity_growth_rate": trend_row[12],
+        "velocity_checked_at": trend_row[13].isoformat() if trend_row[13] else None,
+        "evidence": trend_row[14] if isinstance(trend_row[14], list) else (json.loads(trend_row[14]) if isinstance(trend_row[14], str) else (trend_row[14] or []))
       }
       
       # 2. Fetch posts
       cur.execute(
         """
-        SELECT post_id, platform, caption_text, metadata, likes, comments, shares, views,
+        SELECT post_id, platform, creator_id, caption_text, metadata, likes, comments, shares, views,
                collected_at, posted_at, sbert_score
         FROM posts
         WHERE linked_trend_id = %s
@@ -285,7 +254,7 @@ def get_trend_details(trend_id: str):
       posts_rows = cur.fetchall()
       posts = []
       for prow in posts_rows:
-        meta = prow[3]
+        meta = prow[4]
         if isinstance(meta, str):
           meta = json.loads(meta)
         elif meta is None:
@@ -294,15 +263,16 @@ def get_trend_details(trend_id: str):
         posts.append({
           "post_id": prow[0],
           "platform": prow[1],
-          "caption_text": prow[2],
+          "creator_id": prow[2],
+          "caption_text": prow[3],
           "metadata": meta,
-          "likes": prow[4],
-          "comments": prow[5],
-          "shares": prow[6],
-          "views": prow[7],
-          "collected_at": prow[8].isoformat() if prow[8] else None,
-          "posted_at": prow[9].isoformat() if prow[9] else None,
-          "sbert_score": prow[10]
+          "likes": prow[5],
+          "comments": prow[6],
+          "shares": prow[7],
+          "views": prow[8],
+          "collected_at": prow[9].isoformat() if prow[9] else None,
+          "posted_at": prow[10].isoformat() if prow[10] else None,
+          "sbert_score": prow[11]
         })
         
       # 3. Fetch chart data (daily volume)

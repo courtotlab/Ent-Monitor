@@ -12,11 +12,10 @@ const navItems = [
   { title: "Home", url: "/", icon: HomeIcon },
   { title: "Dashboard", url: "/dashboard", icon: FileTextIcon },
   { title: "Trend", url: "/trends", icon: TrendingUpIcon },
-  { title: "Feedback", url: "/feedback", icon: MessageSquareIcon },
+  // { title: "Feedback", url: "/feedback", icon: MessageSquareIcon },
 ]
 
 interface AppNavbarProps {
-  /** Override the active item. If omitted, determined from pathname. */
   activePage?: string
 }
 
@@ -49,14 +48,14 @@ export function AppNavbar({ activePage }: AppNavbarProps) {
         </Link>
 
         {/* Search */}
-        <div className="relative w-48">
+        {/* <div className="relative w-48">
           <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
           <Input
             type="search"
             placeholder="Search..."
             className="pl-8 h-8 w-full text-sm"
           />
-        </div>
+        </div> */}
 
         {/* Nav items */}
         <nav className="flex items-center gap-1">

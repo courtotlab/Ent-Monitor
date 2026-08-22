@@ -124,7 +124,7 @@ export function TrendReportForm() {
                   {...field}
                   id={field.name}
                   aria-invalid={fieldState.invalid || undefined}
-                  placeholder="Describe the trend — what is it about, who is spreading it, what makes it harmful?"
+                  placeholder="Describe the trend - what is it about, who is spreading it, what makes it harmful?"
                   className="min-h-[100px]"
                 />
                 <FieldDescription>

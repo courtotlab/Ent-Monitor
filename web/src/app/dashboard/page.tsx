@@ -3,8 +3,6 @@ import { ChartAreaInteractive } from "@/components/dashboard/chart-area-interact
 import { DataTable } from "@/components/dashboard/data-table"
 import { SectionCards } from "@/components/dashboard/section-cards"
 
-import data from "./data.json"
-
 export default function Page() {
   return (
     <div className="flex min-h-svh flex-col bg-sidebar">
@@ -20,7 +18,7 @@ export default function Page() {
               <div className="px-4 lg:px-6">
                 <ChartAreaInteractive />
               </div>
-              <DataTable data={data} />
+              <DataTable />
             </div>
           </div>
         </main>

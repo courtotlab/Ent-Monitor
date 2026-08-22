@@ -3,7 +3,7 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 
-// ─── Field ────────────────────────────────────────────────────────────────────
+//   Field                      
 
 interface FieldProps extends React.ComponentProps<"div"> {
   orientation?: "vertical" | "horizontal"
@@ -27,7 +27,7 @@ function Field({ className, orientation = "vertical", ...props }: FieldProps) {
   )
 }
 
-// ─── FieldLabel ───────────────────────────────────────────────────────────────
+//   FieldLabel                      
 
 interface FieldLabelProps extends React.ComponentProps<"label"> {}
 
@@ -44,7 +44,7 @@ function FieldLabel({ className, ...props }: FieldLabelProps) {
   )
 }
 
-// ─── FieldDescription ─────────────────────────────────────────────────────────
+//   FieldDescription                    
 
 function FieldDescription({ className, ...props }: React.ComponentProps<"p">) {
   return (
@@ -56,7 +56,7 @@ function FieldDescription({ className, ...props }: React.ComponentProps<"p">) {
   )
 }
 
-// ─── FieldError ───────────────────────────────────────────────────────────────
+//   FieldError                      
 
 interface FieldError {
   message?: string
@@ -81,7 +81,7 @@ function FieldError({ className, errors, ...props }: FieldErrorProps) {
   )
 }
 
-// ─── FieldContent ─────────────────────────────────────────────────────────────
+//   FieldContent                     ─
 
 function FieldContent({ className, ...props }: React.ComponentProps<"div">) {
   return (
@@ -93,7 +93,7 @@ function FieldContent({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-// ─── FieldGroup ───────────────────────────────────────────────────────────────
+//   FieldGroup                      
 
 function FieldGroup({ className, ...props }: React.ComponentProps<"div">) {
   return (
@@ -105,7 +105,7 @@ function FieldGroup({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-// ─── FieldSet ─────────────────────────────────────────────────────────────────
+//   FieldSet                     
 
 function FieldSet({ className, ...props }: React.ComponentProps<"fieldset">) {
   return (
@@ -117,7 +117,7 @@ function FieldSet({ className, ...props }: React.ComponentProps<"fieldset">) {
   )
 }
 
-// ─── FieldLegend ──────────────────────────────────────────────────────────────
+//   FieldLegend                    
 
 interface FieldLegendProps extends React.ComponentProps<"legend"> {
   variant?: "default" | "label"
