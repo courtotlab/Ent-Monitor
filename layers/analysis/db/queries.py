@@ -139,10 +139,12 @@ def _check_resurfacing(trend_id: str, lifecycle: str, last_seen: datetime | None
   return lifecycle
 
 def _reassign_and_update_posts(cur, posts: list[dict], trend_id: str, label: str) -> None:
+  logger.info("Reassigning %d posts for trend %s", len(posts), trend_id)
   for p in posts:
     p_id = p.get("post_id")
     p_platform = p.get("platform")
     if not p_id or not p_platform:
+      logger.warning("Missing p_id or p_platform in post: %s", p)
       continue
 
     cur.execute(
@@ -165,6 +167,7 @@ def _reassign_and_update_posts(cur, posts: list[dict], trend_id: str, label: str
       """,
       (label, trend_id, p_id, p_platform),
     )
+    logger.info("Updated post_id=%s platform=%s rowcount=%d", p_id, p_platform, cur.rowcount)
 
 
 # Agent run tracking

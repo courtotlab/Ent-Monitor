@@ -16,7 +16,6 @@ from layers.analysis.utils.llm import invoke_llm
 from pydantic import BaseModel, Field
 
 from layers.analysis.core.state import AgentState
-from layers.analysis.utils.security import check_output_for_injection
 
 logger = logging.getLogger(__name__)
 
@@ -345,9 +344,6 @@ def classify_node(state: AgentState) -> dict:
         
   citations_used_as_support = supporting_evidence_ids
   needs_more_evidence = False
-
-  if check_output_for_injection(reasoning, cluster_id):
-    pass
 
   logger.info(
     "CLASSIFY: %s severity=%s risk=%.3f lifecycle=%s verification=%s low_confidence=%s",

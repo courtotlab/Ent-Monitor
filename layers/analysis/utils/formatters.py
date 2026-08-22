@@ -31,7 +31,7 @@ def build_cluster_json(
     eff_state.update(overrides)
 
   vf = eff_state.get("verify_finding")
-  verify_passed = True if (vf and vf.get("is_supported", False)) else False
+  verify_passed = bool(vf and vf.get("citation_valid") and vf.get("citation_relevant") and vf.get("label_consistent"))
   evidence_status = "verified" if verify_passed else "unverified"
   
   if is_fast_path:

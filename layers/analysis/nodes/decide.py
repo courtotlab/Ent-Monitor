@@ -11,7 +11,6 @@ import logging
 from layers.analysis.core.state import AgentState
 from layers.analysis.db.queries import write_cluster_to_db
 from layers.analysis.utils.formatters import build_cluster_json
-from layers.shared.posts import get_engagement
 
 logger = logging.getLogger(__name__)
 

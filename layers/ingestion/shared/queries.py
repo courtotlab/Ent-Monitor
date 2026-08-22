@@ -20,21 +20,6 @@ def _parse_ts(value: str | None) -> datetime | None:
     return None
   return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
-
-def upsert_creator(creator_id: str | None, platform: str) -> None:
-  if not creator_id:
-    return
-  with get_connection() as conn, conn.cursor() as cur:
-    cur.execute(
-      """
-   INSERT INTO creators (creator_id, platform)
-   VALUES (%s, %s)
-   ON CONFLICT (creator_id, platform) DO NOTHING
-   """,
-      (creator_id, platform),
-    )
-
-
 def insert_post(
   post: dict[str, Any],
   sbert_score: float | None = None,
@@ -45,8 +30,6 @@ def insert_post(
   hashtags = post.get("hashtags")
   hashtags_value = Json(hashtags) if hashtags is not None else None
   metadata_value = Json(post.get("metadata") or {})
-
-  upsert_creator(post.get("creator_id"), post["platform"])
 
   transcript = post.get("transcript_text")
   if isinstance(transcript, (list, dict)):
@@ -74,7 +57,7 @@ def insert_post(
     collected_at, posted_at, sbert_score, matched_anchor_id
    ) VALUES (
     %s, %s, %s,
-    %s, %s, %s, %s, %s,
+    (SELECT creator_id FROM creators WHERE creator_id = %s AND platform = %s), %s, %s, %s, %s,
     %s, %s, %s, %s,
     %s, %s, %s, %s
    )
@@ -106,6 +89,7 @@ def insert_post(
         post["platform"],
         post_source,
         post.get("creator_id"),
+        post["platform"],
         post.get("caption_text"),
         transcript,
         hashtags_value,

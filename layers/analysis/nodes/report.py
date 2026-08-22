@@ -52,7 +52,6 @@ def report_node(state: AgentState) -> dict:
 
   Only called for clusters that crossed the dashboard threshold in decide_router.
   """
-  run_id = state.get("run_id", "unknown_run")
   cluster_id = state.get("cluster_id", "unknown")
   label = state.get("label", "CONCERNING")
   confidence = state.get("confidence", 0.5)
@@ -71,8 +70,6 @@ def report_node(state: AgentState) -> dict:
     evidence_status = "web_only"
   else:
     evidence_status = "no_literature_found"
-
-  platforms = list(set(p.get("platform", "unknown") for p in posts))
 
   citations_used = state.get("citations_used_as_support", [])
   supporting_evidence = [

@@ -58,7 +58,14 @@ def get_canonical_caption(posts: list[dict]) -> str:
     return "unknown_behavior"
   return Counter(captions).most_common(1)[0][0]
 
-from layers.analysis.utils.security import check_output_for_injection
+def _is_prompt_injection(text: str) -> bool:
+  """Detect lazy prompt injection attempts in raw post text."""
+  patterns = [
+    "ignore previous", "ignore all", "system:", "assistant:",
+    "new instructions", "you are now"
+  ]
+  lower = text.lower()
+  return any(p in lower for p in patterns)
 
 #  XML wrapping
 def _wrap_post_xml(post: dict, cluster_label: int | str, centroid_sim: float) -> str:
@@ -373,7 +380,14 @@ def observe_node(state: AgentState) -> dict:
   """
   # This node NEVER lets the LLM cluster from scratch. We do the heavy lifting 
   # with math (SBERT+HDBSCAN) first, and only use the LLM to validate the mathematical intent.
-  posts = state.get("posts", [])
+  raw_posts = state.get("posts", [])
+  posts = []
+  for p in raw_posts:
+    if _is_prompt_injection(p.get("caption_text", "")):
+      logger.warning("OBSERVE: Dropping post %s due to suspected prompt injection", p.get("post_id", "unknown"))
+    else:
+      posts.append(p)
+
   print(f"\n[OBSERVE] Analyzing batch of {len(posts)} incoming posts...")
   if not posts:
     return {"clusters_queue": [], "cluster_results": []}
@@ -471,11 +485,6 @@ def observe_node(state: AgentState) -> dict:
         "split_post_ids": [],
       }
 
-    # Check for injection in outputs
-    for field in ("cluster_name", "search_context"):
-      if check_output_for_injection(result.get(field, ""), f"cluster_{lbl}"):
-        result["triage_flag"] = "unclear"  # force human review downstream
-
     # Handle splits - moved to noise. If LLM unconfirms cluster without listing specific splits, reject all.
     split_ids = set(result.get("split_post_ids", []))
     if not result.get("confirmed", True) and not split_ids:
@@ -560,11 +569,6 @@ def observe_node(state: AgentState) -> dict:
         new_cluster_name = ng.get("cluster_name", new_id)
         new_triage_flag = ng.get("triage_flag", "unclear")
         
-        for field_val in (new_cluster_name, new_search_context):
-          if check_output_for_injection(field_val, new_id):
-            new_triage_flag = "unclear"  # force human review
-            break
-
         validated_clusters.append(
           {
             "cluster_id": new_id,

@@ -36,8 +36,7 @@ def set_circuit_breaker(cb: DuckDuckGoCircuitBreaker) -> None:
 def _raw_ddg_search(query: str, max_results: int = 5) -> list[dict] | None:
   """Internal: call DDG and return raw result dicts, or None if network/tool failure."""
   with DDGS() as ddgs:
-    results = list(ddgs.text(query, max_results=max_results))
-  return results
+    return list(ddgs.text(query, max_results=max_results))
 
 
 def duckduckgo_search(
