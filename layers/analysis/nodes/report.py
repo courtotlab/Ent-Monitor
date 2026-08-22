@@ -2,13 +2,11 @@
 
 GPT-4.1-mini at low effort.  Only runs for clusters that cleared the
 decide_router threshold (HARMFUL / CONCERNING / risk >= 0.5 / no_evidence).
-Writes the full cluster JSON to results/final/<run_id>/ and appends to
-cluster_results so the dashboard sees it.
+Appends to cluster_results so the dashboard sees it.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 
 from langchain_core.messages import HumanMessage
@@ -18,7 +16,6 @@ from pydantic import BaseModel, Field
 from layers.analysis.core.state import AgentState
 from layers.analysis.db.queries import write_cluster_to_db
 from layers.analysis.utils.formatters import build_cluster_json
-from layers.shared.paths import get_run_dir
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +48,7 @@ class ReportSummary(BaseModel):
   key_evidence: list[str] = Field(description="List of key evidence e.g., 'Paper 1 (PMID: ...)', 'Source 2'")
 
 def report_node(state: AgentState) -> dict:
-  """REPORT node generates summary, writes full JSON, appends to cluster_results.
+  """REPORT node generates summary and appends to cluster_results.
 
   Only called for clusters that crossed the dashboard threshold in decide_router.
   """
@@ -123,7 +120,7 @@ def report_node(state: AgentState) -> dict:
 
   logger.info("REPORT: generated summary for %s", cluster_id)
 
-  #  Build and write full cluster JSON
+  #  Build full cluster JSON
   cluster_json = build_cluster_json(
       state=state,
       abstract=report.get("summary", ""),
@@ -143,12 +140,7 @@ def report_node(state: AgentState) -> dict:
       for te in tool_errors
     ]
 
-  output_dir = get_run_dir(run_id, "final")
-  output_dir.mkdir(parents=True, exist_ok=True)
-  output_path = output_dir / f"{cluster_id}.json"
-  with open(output_path, "w", encoding="utf-8") as f:
-    json.dump(cluster_json, f, indent=2, ensure_ascii=False)
-  logger.info("REPORT: wrote %s", output_path)
+
 
   #  Persist to database (trends + posts tables)
   try:

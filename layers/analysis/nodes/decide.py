@@ -6,13 +6,11 @@ Sets tool_degraded flag and handles LOW post DB writes.
 
 from __future__ import annotations
 
-import json
 import logging
 
 from layers.analysis.core.state import AgentState
 from layers.analysis.db.queries import write_cluster_to_db
 from layers.analysis.utils.formatters import build_cluster_json
-from layers.shared.paths import get_run_dir
 from layers.shared.posts import get_engagement
 
 logger = logging.getLogger(__name__)
@@ -45,78 +43,31 @@ def decide_node(state: AgentState) -> dict:
   current_results = list(state.get("cluster_results", []))
 
   if label == "LOW" and not state.get("low_confidence", False):
-    _log_skipped_low(state)
     try:
       minimal_cluster_json = build_cluster_json(
           state=state,
           abstract="No detailed report generated (LOW risk).",
       )
       write_cluster_to_db(minimal_cluster_json, centroid=state.get("centroid"))
-      
-      # Also save as a standalone JSON file for manual review
-      output_dir = get_run_dir(state.get("run_id"), "final")
-      output_dir.mkdir(parents=True, exist_ok=True)
-      output_path = output_dir / f"{cluster_id}_low.json"
-      
-      with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(minimal_cluster_json, f, indent=2, ensure_ascii=False)
     except Exception as exc:
       logger.warning("DECIDE: failed to write LOW posts/cluster to DB - %s", exc)
-      
-    # Append a minimal cluster_json so it appears in run_summary.json
-    current_results.append({
-        "cluster_id": cluster_id,
-        "classification": {
-            "label": label,
-            "lifecycle": state.get("lifecycle", "Isolated incident"),
-            "verification": state.get("verification", "PROVISIONAL"),
-            "confidence": state.get("confidence", 1.0),
-            "risk_score": state.get("risk_score", 0.0),
-            "evidence_status": "skipped_low",
-        }
-    })
+    
+  # Append a minimal cluster_json so it appears in run_summary.json
+  current_results.append({
+      "cluster_id": cluster_id,
+      "classification": {
+          "label": label,
+          "lifecycle": state.get("lifecycle", "Isolated incident"),
+          "verification": state.get("verification", "PROVISIONAL"),
+          "confidence": state.get("confidence", 1.0),
+          "risk_score": state.get("risk_score", 0.0),
+          "evidence_status": "skipped_low",
+      }
+  })
 
   return {
     "tool_degraded": tool_degraded,
     "cluster_results": current_results,
   }
 
-def _log_skipped_low(state: AgentState) -> None:
-  """Append skipped LOW clusters to an auditable JSON file."""
-  run_id = state.get("run_id", "unknown_run")
-  output_dir = get_run_dir(run_id, "final")
-  output_dir.mkdir(parents=True, exist_ok=True)
-  skipped_file = output_dir / "skipped_low.json"
 
-  entry = {
-    "cluster_id": state.get("cluster_id", "unknown"),
-    "trend_name": state.get("trend_name", "Unknown trend"),
-    "post_count": len(state.get("posts", [])),
-    "risk_score": state.get("risk_score", 0.0),
-    "evidence_score": state.get("evidence_score", 0.0),
-    "low_confidence": state.get("low_confidence", False),
-    "posts": [
-      {
-        "post_id": p.get("post_id", ""),
-        "platform": p.get("platform", ""),
-        "caption_text": (p.get("caption_text") or "")[:200],
-        "sbert_score": p.get("sbert_score", 0.0),
-        "likes": get_engagement(p, "likes"),
-        "views": get_engagement(p, "views"),
-      }
-      for p in state.get("posts", [])
-    ],
-  }
-
-  skipped = []
-  if skipped_file.exists():
-    try:
-      with open(skipped_file, "r", encoding="utf-8") as f:
-        skipped = json.load(f)
-    except Exception:
-      pass
-
-  skipped.append(entry)
-
-  with open(skipped_file, "w", encoding="utf-8") as f:
-    json.dump(skipped, f, indent=2, ensure_ascii=False)

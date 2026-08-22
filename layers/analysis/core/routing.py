@@ -27,7 +27,7 @@ EVIDENCE_THRESHOLD = 0.45
 
 #  Deterministic evidence-quality formula (ASSESS)
 def compute_evidence_score(state: AgentState) -> float:
-  """Pure formula - no LLM.  Returns 0.0–1.0."""
+  """Pure formula - no LLM.  Returns 0.0-1.0."""
   evidence = state["evidence"]
   if not evidence:
     return 0.0

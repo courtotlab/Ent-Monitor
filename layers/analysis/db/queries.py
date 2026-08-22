@@ -26,7 +26,7 @@ def check_if_trend_exists(trend_id: str) -> bool:
     return False
 
 
-def fetch_unprocessed_posts(threshold: float = 0.38) -> list[dict]:
+def fetch_unprocessed_posts(threshold: float = 0.3) -> list[dict]:
   """Fetch posts that passed SBERT filtering but haven't been classified by the agent yet."""
   with get_connection() as conn, conn.cursor() as cur:
     cur.execute(

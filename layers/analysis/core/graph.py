@@ -6,7 +6,6 @@ processes clusters sequentially to prevent DECIDE merge-check race conditions.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime
 
@@ -37,7 +36,6 @@ from layers.analysis.tools.duckduckgo import set_circuit_breaker
 from layers.analysis.tools.retry import DuckDuckGoCircuitBreaker
 from layers.analysis.tools.semantic_scholar import reset_circuit_breaker as reset_ss_circuit_breaker
 from layers.analysis.utils.formatters import build_cluster_json
-from layers.shared.paths import get_run_dir
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -124,8 +122,6 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
   # Finalise the agent run in the database
   complete_agent_run(run_id, cluster_results, status=status)
 
-  #  Write run summary (local file - kept as-is)
-  _write_run_summary(run_id, cluster_results)
 
   return {"run_id": run_id, "clusters": cluster_results}
 
@@ -299,35 +295,4 @@ def build_graph() -> StateGraph:
   return graph.compile()
 
 
-def _write_run_summary(run_id: str, cluster_results: list[dict]) -> None:
-  """Write the run_summary.json file."""
-  output_dir = get_run_dir(run_id, "final")
-  output_dir.mkdir(parents=True, exist_ok=True)
 
-  labels = {"HIGH": 0, "MODERATE": 0, "LOW": 0}
-  for r in cluster_results:
-    classification = r.get("classification", {})
-    lbl = classification.get("label", "MODERATE")
-    labels[lbl] = labels.get(lbl, 0) + 1
-
-  summary = {
-    "run_id": run_id,
-    "completed_at": datetime.now(UTC).isoformat(),
-    "total_clusters": len(cluster_results),
-    "labels": labels,
-    "clusters": [
-      {
-        "cluster_id": r.get("cluster_id", "unknown"),
-        "label": r.get("classification", {}).get("label", "MODERATE"),
-        "risk_score": r.get("classification", {}).get("risk_score", 0.0),
-        "low_confidence": r.get("classification", {}).get("confidence", 1.0) < 0.75,
-      }
-      for r in cluster_results
-    ],
-  }
-
-  summary_path = output_dir / "run_summary.json"
-  with open(summary_path, "w", encoding="utf-8") as f:
-    json.dump(summary, f, indent=2, ensure_ascii=False)
-
-  logger.info("Run summary written to %s", summary_path)
