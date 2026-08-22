@@ -1,6 +1,7 @@
 import random
+
 from layers.ingestion.shared.models import NormalizedPost
-from layers.ingestion.shared.normalizer import norm_instagram, extract_id
+from layers.ingestion.shared.normalizer import extract_id, norm_instagram
 
 
 async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, limit_engagers: int, posts_per_engager: int) -> list[NormalizedPost]:
@@ -22,11 +23,14 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
       if shortCode and len(post_urls) < 5 * len(profile_urls):
         post_urls.append(f"https://www.instagram.com/p/{shortCode}/")
       if "error" not in item and (item.get("id") or item.get("shortCode")):
-        posts.append(norm_instagram(item, "creator_monitor", item.get("ownerUsername", "")))
+        posts.append(
+          norm_instagram(item, "creator_monitor", item.get("ownerUsername", ""))
+        )
   except Exception as e:
     print(f"[IG] Creator scrape error: {e}")
 
-  if limit_engagers <= 0 or not post_urls: return posts
+  if limit_engagers <= 0 or not post_urls:
+    return posts
 
   engagers = set()
   handle_set = {extract_id(u).lower() for u in profile_urls if u}
@@ -44,7 +48,8 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
       username = item.get("ownerUsername") or item.get("username")
       if username and username.lower() not in handle_set:
         engagers.add(username)
-      if len(engagers) >= limit_engagers: break
+      if len(engagers) >= limit_engagers:
+        break
   except Exception as e:
     print(f"[IG] Engager comments fetch error: {e}")
 
@@ -93,7 +98,8 @@ async def scrape_instagram_explore(client, limit_posts: int) -> list[NormalizedP
 
 async def scrape_instagram_search(client, keywords: list[str], limit_posts: int, source: str) -> list[NormalizedPost]:
   posts = []
-  if not keywords: return posts
+  if not keywords:
+    return posts
   try:
     run = await client.actor("apify/instagram-scraper").call(
       run_input={

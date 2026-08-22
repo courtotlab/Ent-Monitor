@@ -31,7 +31,11 @@ def scrape_reddit_sync(subreddits: list[str], limit_posts: int, source_override:
           for submission in fetcher(limit=limit_posts):
             if submission.id not in seen:
               seen.add(submission.id)
-              posts.append(norm_reddit(submission, sub, is_praw=True, source_override=source_override))
+              posts.append(
+                norm_reddit(
+                  submission, sub, is_praw=True, source_override=source_override
+                )
+              )
               sub_count += 1
 
             if sub_count >= limit_posts:
@@ -62,7 +66,11 @@ def scrape_reddit_sync(subreddits: list[str], limit_posts: int, source_override:
             post_id = post_data.get("id")
             if post_id and post_id not in seen:
               seen.add(post_id)
-              posts.append(norm_reddit(post_data, sub, is_praw=False, source_override=source_override))
+              posts.append(
+                norm_reddit(
+                  post_data, sub, is_praw=False, source_override=source_override
+                )
+              )
               sub_count += 1
 
             if sub_count >= limit_posts:
@@ -81,6 +89,16 @@ async def scrape_reddit(subreddits: list[str], limit_posts: int, source_override
   return await asyncio.to_thread(scrape_reddit_sync, subreddits, limit_posts, source_override)
 
 async def scrape_reddit_explore(limit_posts: int) -> list[NormalizedPost]:
-  explore_subs = ["popular", "all", "todayilearned", "videos", "news", "aww", "pics", "parenting", "askreddit"]
+  explore_subs = [
+    "popular",
+    "all",
+    "todayilearned",
+    "videos",
+    "news",
+    "aww",
+    "pics",
+    "parenting",
+    "askreddit",
+  ]
   random_sub = random.choice(explore_subs)
   return await scrape_reddit([random_sub], limit_posts, source_override="explore_feed")

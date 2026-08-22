@@ -41,26 +41,23 @@ def norm_instagram(post_data: dict, source: str, creator_id: str) -> NormalizedP
 
 
 def norm_reddit(post_data, subreddit: str, is_praw: bool, source_override: str = None) -> NormalizedPost:
-  # Collapse PRAW object vs dict access into shared variables
-  post_id = str(post_data.id) if is_praw else str(post_data.get("id", ""))
-  source = source_override or "reddit"
+  get_val = lambda k, d="": getattr(post_data, k, d) if is_praw else post_data.get(k, d)
   
   if is_praw:
-    creator = str(post_data.author.name if post_data.author else "deleted")
+    creator = str(post_data.author.name if getattr(post_data, "author", None) else "deleted")
   else:
-    creator = str(post_data.get("author") or "deleted")
-      
-  title = post_data.title if is_praw else post_data.get("title", "")
-  selftext = post_data.selftext if is_praw else post_data.get("selftext", "")
-  created_utc = post_data.created_utc if is_praw else post_data.get("created_utc", 0)
-  score = getattr(post_data, "score", 0) if is_praw else post_data.get("score", 0)
-  num_comments = getattr(post_data, "num_comments", 0) if is_praw else post_data.get("num_comments", 0)
-  url = post_data.url if is_praw else post_data.get("url", "")
+    creator = str(post_data.get("author", "deleted"))
 
+  title = get_val("title")
+  selftext = get_val("selftext")
+  created_utc = get_val("created_utc", 0)
+  score = get_val("score", 0)
+  num_comments = get_val("num_comments", 0)
+  
   return NormalizedPost(
-    post_id=post_id,
+    post_id=str(get_val("id")),
     platform="reddit",
-    source=source,
+    source=source_override or "reddit",
     creator_id=creator,
     caption_text=f"{title}\n\n{selftext}".strip(),
     posted_at=datetime.datetime.fromtimestamp(created_utc, datetime.UTC).isoformat(),
@@ -72,7 +69,7 @@ def norm_reddit(post_data, subreddit: str, is_praw: bool, source_override: str =
       "views": 0,
       "score": score,
     },
-    metadata={"subreddit": subreddit, "url": url},
+    metadata={"subreddit": subreddit, "url": get_val("url")},
   )
 
 

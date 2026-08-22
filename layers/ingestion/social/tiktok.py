@@ -1,4 +1,5 @@
 import random
+
 from layers.ingestion.shared.models import NormalizedPost
 from layers.ingestion.shared.normalizer import extract_id, norm_tiktok
 
@@ -6,7 +7,8 @@ from layers.ingestion.shared.normalizer import extract_id, norm_tiktok
 async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_engagers: int, posts_per_engager: int) -> list[NormalizedPost]:
   posts = []
   valid_handles = [u for u in handles if u]
-  if not valid_handles: return posts
+  if not valid_handles:
+    return posts
 
   post_urls = []
   try:
@@ -22,7 +24,11 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
       if url and len(post_urls) < 5 * len(valid_handles):
         post_urls.append(url)
       if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
-        posts.append(norm_tiktok(item, "creator_monitor", item.get("author", {}).get("uniqueId", "")))
+        posts.append(
+          norm_tiktok(
+            item, "creator_monitor", item.get("author", {}).get("uniqueId", "")
+          )
+        )
   except Exception as e:
     print(f"[TT] Creator scrape error: {e}")
 
@@ -44,7 +50,8 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
       author_id = (item.get("author") or {}).get("uniqueId", "")
       if author_id and author_id.lower() not in handle_set:
         engagers.add(author_id)
-      if len(engagers) >= limit_engagers: break
+      if len(engagers) >= limit_engagers:
+        break
   except Exception as e:
     print(f"[TT] Engager comments fetch error: {e}")
 
@@ -60,7 +67,9 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
       )
       async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
         if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
-          posts.append(norm_tiktok(item, "engager", item.get("author", {}).get("uniqueId", "")))
+          posts.append(
+            norm_tiktok(item, "engager", item.get("author", {}).get("uniqueId", ""))
+          )
     except Exception as e:
       print(f"[TT] Engager posts fetch error: {e}")
 
@@ -88,7 +97,9 @@ async def scrape_tiktok_explore(client, limit_posts: int) -> list[NormalizedPost
   return posts
 
 
-async def scrape_tiktok_search(client, keywords: list[str], limit_posts: int, source: str) -> list[NormalizedPost]:
+async def scrape_tiktok_search(
+  client, keywords: list[str], limit_posts: int, source: str
+) -> list[NormalizedPost]:
   posts = []
   if not keywords:
     return posts
