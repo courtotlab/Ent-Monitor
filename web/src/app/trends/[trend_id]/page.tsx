@@ -385,7 +385,7 @@ export default function TrendDetailsPage() {
                       </CardAction>
                     </CardHeader>
                     <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
-                      <ChartContainer config={chartConfig} className="aspect-auto h-[250px] w-full">
+                      <ChartContainer config={chartConfig} className="aspect-auto h-[300px] w-full">
                         <AreaChart data={filteredChartData}>
                           <defs>
                             <linearGradient id="fillCount" x1="0" y1="0" x2="0" y2="1">
@@ -394,7 +394,7 @@ export default function TrendDetailsPage() {
                             </linearGradient>
                           </defs>
                           <CartesianGrid vertical={false} />
-                          <YAxis hide domain={[-1, (dataMax: number) => Math.max(dataMax, 5)]} />
+                          <YAxis hide domain={[0, (dataMax: number) => Math.max(dataMax, 1)]} />
                           <XAxis
                             dataKey="date"
                             tickLine={false}
@@ -492,32 +492,41 @@ export default function TrendDetailsPage() {
                         <Table>
                           <TableHeader className="sticky top-0 z-10 bg-muted">
                             <TableRow>
-                              <TableHead className="px-4">Source</TableHead>
+                              <TableHead className="px-4 w-[100px]">Source</TableHead>
+                              <TableHead className="px-4">Link</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
                             {data.trend.evidence && data.trend.evidence.length > 0 ? (
-                              data.trend.evidence.map((ev, i) => (
+                              data.trend.evidence.map((ev, i) => {
+                                const titleText = ev.title || "External Source";
+                                const words = titleText.split(" ");
+                                const truncatedTitle = words.length > 10 ? words.slice(0, 10).join(" ") + "..." : titleText;
+                                
+                                return (
                                 <TableRow key={i}>
-                                  <TableCell className="px-4 py-3">
+                                  <TableCell className="px-4 py-3 align-top">
+                                    <Badge variant="outline" className="text-[10px] uppercase tracking-wider shrink-0 mt-0.5">
+                                      {ev.source}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="px-4 py-3 align-top">
                                     <a 
                                       href={ev.url} 
                                       target="_blank" 
                                       rel="noreferrer" 
-                                      className="flex items-center gap-2 font-medium text-primary hover:underline hover:text-primary/80 transition-colors"
+                                      className="inline-flex items-center gap-1.5 font-medium text-primary hover:underline hover:text-primary/80 transition-colors"
                                       title={ev.title}
                                     >
-                                      <Badge variant="outline" className="text-[10px] uppercase tracking-wider shrink-0">
-                                        {ev.source}
-                                      </Badge>
-                                      <span className="truncate">
-                                        {ev.title || "External Source"}
+                                      <span>
+                                        {truncatedTitle}
                                       </span>
-                                      <ExternalLinkIcon className="size-3.5 shrink-0 opacity-50" />
+                                      <ExternalLinkIcon className="size-3.5 shrink-0 opacity-50 mb-[-2px]" />
                                     </a>
                                   </TableCell>
                                 </TableRow>
-                              ))
+                                );
+                              })
                             ) : (
                               <TableRow>
                                 <TableCell className="h-32 text-center text-muted-foreground text-sm">

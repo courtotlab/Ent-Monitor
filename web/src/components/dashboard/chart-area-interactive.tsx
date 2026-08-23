@@ -159,7 +159,7 @@ export function ChartAreaInteractive() {
       <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
         <ChartContainer
           config={chartConfig}
-          className="aspect-auto h-[250px] w-full"
+          className="aspect-auto h-[300px] w-full"
         >
           <AreaChart data={filteredData}>
             <defs>
@@ -201,7 +201,7 @@ export function ChartAreaInteractive() {
               </linearGradient>
             </defs>
             <CartesianGrid vertical={false} />
-            <YAxis hide domain={[-1, (dataMax: number) => Math.max(dataMax, 10)]} />
+            <YAxis hide domain={[0, (dataMax: number) => Math.max(dataMax, 1)]} />
             <XAxis
               dataKey="date"
               tickLine={false}
