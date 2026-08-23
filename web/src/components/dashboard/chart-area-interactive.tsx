@@ -156,7 +156,7 @@ export function ChartAreaInteractive() {
           </DropdownMenu>
         </CardAction>
       </CardHeader>
-      <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
+      <CardContent className="px-2 pt-2 sm:px-6 sm:pt-4">
         <ChartContainer
           config={chartConfig}
           className="aspect-auto h-[300px] w-full"
@@ -209,10 +209,11 @@ export function ChartAreaInteractive() {
               tickMargin={8}
               minTickGap={32}
               tickFormatter={(value) => {
-                const date = new Date(value)
+                const date = new Date(`${value}T12:00:00Z`)
                 return date.toLocaleDateString("en-US", {
                   month: "short",
                   day: "numeric",
+                  timeZone: "UTC",
                 })
               }}
             />
@@ -223,9 +224,10 @@ export function ChartAreaInteractive() {
                 <ChartTooltipContent
                   labelFormatter={(value) => {
                     if (!value) return ""
-                    return new Date(value as string | number).toLocaleDateString("en-US", {
+                    return new Date(`${value}T12:00:00Z`).toLocaleDateString("en-US", {
                       month: "short",
                       day: "numeric",
+                      timeZone: "UTC",
                     })
                   }}
                   indicator="dot"
@@ -238,7 +240,6 @@ export function ChartAreaInteractive() {
               fill="url(#fillHarmful)"
               stroke="var(--color-harmful)"
               strokeWidth={2}
-              stackId="a"
             />
             <Area
               dataKey="concerning"
@@ -246,7 +247,6 @@ export function ChartAreaInteractive() {
               fill="url(#fillConcerning)"
               stroke="var(--color-concerning)"
               strokeWidth={2}
-              stackId="a"
             />
             <Area
               dataKey="safe"
@@ -254,7 +254,6 @@ export function ChartAreaInteractive() {
               fill="url(#fillSafe)"
               stroke="var(--color-safe)"
               strokeWidth={2}
-              stackId="a"
             />
           </AreaChart>
         </ChartContainer>

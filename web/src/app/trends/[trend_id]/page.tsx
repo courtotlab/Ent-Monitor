@@ -32,7 +32,7 @@ type RiskLevel = "HIGH" | "MODERATE" | "LOW"
 
 function formatDate(iso: string | null) {
   if (!iso) return "-"
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
 }
 
 function formatTrendName(trendId: string) {
@@ -384,7 +384,7 @@ export default function TrendDetailsPage() {
                         </DropdownMenu>
                       </CardAction>
                     </CardHeader>
-                    <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
+                    <CardContent className="px-2 pt-2 sm:px-6 sm:pt-4">
                       <ChartContainer config={chartConfig} className="aspect-auto h-[300px] w-full">
                         <AreaChart data={filteredChartData}>
                           <defs>
@@ -402,8 +402,8 @@ export default function TrendDetailsPage() {
                             tickMargin={8}
                             minTickGap={32}
                             tickFormatter={(value) => {
-                              const date = new Date(value)
-                              return date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+                              const date = new Date(`${value}T12:00:00Z`)
+                              return date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
                             }}
                           />
                           <ChartTooltip
@@ -413,7 +413,7 @@ export default function TrendDetailsPage() {
                               <ChartTooltipContent
                                 labelFormatter={(value) => {
                                   if (!value) return ""
-                                  return new Date(value as string | number).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+                                  return new Date(`${value}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
                                 }}
                                 indicator="dot"
                               />
@@ -529,7 +529,7 @@ export default function TrendDetailsPage() {
                               })
                             ) : (
                               <TableRow>
-                                <TableCell className="h-32 text-center text-muted-foreground text-sm">
+                                <TableCell colSpan={2} className="h-32 text-center text-muted-foreground text-sm">
                                   No external URLs found.
                                 </TableCell>
                               </TableRow>
