@@ -50,19 +50,9 @@ def decide_node(state: AgentState) -> dict:
       write_cluster_to_db(minimal_cluster_json, centroid=state.get("centroid"))
     except Exception as exc:
       logger.warning("DECIDE: failed to write LOW posts/cluster to DB - %s", exc)
+      minimal_cluster_json = build_cluster_json(state=state, abstract="No detailed report generated (LOW risk).")
     
-  # Append a minimal cluster_json so it appears in run_summary.json
-  current_results.append({
-      "cluster_id": cluster_id,
-      "classification": {
-          "label": label,
-          "lifecycle": state.get("lifecycle", "Isolated incident"),
-          "verification": state.get("verification", "PROVISIONAL"),
-          "confidence": state.get("confidence", 1.0),
-          "risk_score": state.get("risk_score", 0.0),
-          "evidence_status": "skipped_low",
-      }
-  })
+    current_results.append(minimal_cluster_json)
 
   return {
     "tool_degraded": tool_degraded,
