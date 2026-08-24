@@ -12,7 +12,7 @@ from layers.analysis.db.queries import fetch_unprocessed_posts
 def main():
 
   print("Fetching unprocessed posts from database...")
-  posts = fetch_unprocessed_posts(threshold=0.3)
+  posts = fetch_unprocessed_posts(threshold=0.40)
   if not posts:
     print("No new posts to process.")
     return

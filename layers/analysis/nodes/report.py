@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 
 from layers.analysis.core.state import AgentState
 from layers.analysis.db.queries import write_cluster_to_db
-from layers.analysis.utils.formatters import build_cluster_json
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +56,6 @@ def report_node(state: AgentState) -> dict:
   confidence = state.get("confidence", 0.5)
   risk_score = state.get("risk_score", 0.0)
   evidence = state.get("evidence", [])
-  posts = state.get("posts", [])
-  tool_errors = state.get("tool_errors", [])
-  vf = state.get("verify_finding")
 
   #  Determine evidence status
   if state.get("no_evidence_found"):
@@ -71,7 +67,7 @@ def report_node(state: AgentState) -> dict:
   else:
     evidence_status = "no_literature_found"
 
-  citations_used = state.get("citations_used_as_support", [])
+  citations_used = state.get("supporting_evidence_ids", [])
   supporting_evidence = [
     e for e in evidence
     if (e.get("title") in citations_used or e.get("pmid") in citations_used)
@@ -117,35 +113,30 @@ def report_node(state: AgentState) -> dict:
 
   logger.info("REPORT: generated summary for %s", cluster_id)
 
-  #  Build full cluster JSON
-  cluster_json = build_cluster_json(
-      state=state,
-      abstract=report.get("summary", ""),
-      harm_mechanism=report.get("harm_mechanism", ""),
-      rising_non_trend=False,
-      overrides={"trend_name": report.get("trend_name")} if report.get("trend_name") else None,
-  )
+  # Create an effective state snapshot with the report findings
+  eff_state = dict(state)
+  eff_state["trend_name"] = report.get("trend_name")
+  eff_state["abstract"] = report.get("summary", "")
+  eff_state["harm_mechanism"] = report.get("harm_mechanism", "")
 
-  if tool_errors:
-    cluster_json["tool_errors"] = [
-      {
-        "tool": te.get("tool", "unknown"),
-        "error_type": te.get("error_type", "unknown"),
-        "timestamp": te.get("timestamp", ""),
-        "query": te.get("query", ""),
-      }
-      for te in tool_errors
-    ]
-
-
-
-  #  Persist to database (trends + posts tables)
+  # Persist to database (trends + posts tables)
   try:
-    write_cluster_to_db(cluster_json, centroid=state.get("centroid"))
+    write_cluster_to_db(eff_state, centroid=eff_state.get("centroid"))
+    if state.get("should_monitor", False):
+      if state.get("slang_terms"):
+        logger.info(
+          "REPORT: cluster %s flagged for velocity monitoring (slang_terms=%d)",
+          cluster_id, len(state["slang_terms"]),
+        )
+      else:
+        logger.info(
+          "REPORT: cluster %s is should_monitor=True but has no slang_terms",
+          cluster_id,
+        )
   except Exception as exc:
     logger.warning("REPORT: DB write failed for %s %s (local JSON saved)", cluster_id, exc)
 
   current_results = list(state.get("cluster_results", []))
-  current_results.append(cluster_json)
+  current_results.append(eff_state)
 
   return {"report": report, "cluster_results": current_results}

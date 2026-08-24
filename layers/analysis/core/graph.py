@@ -35,7 +35,7 @@ from layers.analysis.nodes.verify import verify_node
 from layers.analysis.tools.duckduckgo import set_circuit_breaker
 from layers.analysis.tools.retry import DuckDuckGoCircuitBreaker
 from layers.analysis.tools.semantic_scholar import reset_circuit_breaker as reset_ss_circuit_breaker
-from layers.analysis.utils.formatters import build_cluster_json
+
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -89,7 +89,6 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "label": None,
     "confidence": 0.0,
     "citations": [],
-    "citations_used_as_support": [],
     "supporting_evidence_ids": [],
     "risk_score": 0.0,
     "reasoning": "",
@@ -101,6 +100,7 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "low_confidence": False,
     "research_retries_left": 3,
     "verify_retries_left": 3,
+    "should_monitor": False,
   }
 
   logger.info("Invoking Unified Graph for %d posts...", len(posts))
@@ -150,21 +150,16 @@ def merge_known_node(state: AgentState) -> dict:
     logger.warning("MERGE: fast-path failed for trend %s - will appear as skipped", trend_id)
     return {"cluster_results": list(state.get("cluster_results", []))}
 
-  # Build a minimal cluster_result entry so the dashboard sees the merge
-  cluster_json = build_cluster_json(
-      state=state,
-      abstract=f"Merged {len(posts)} new posts into existing trend '{trend_id}'",
-      is_fast_path=True,
-      overrides={
-          "label": result.get("label", "MODERATE"),
-          "risk_score": result.get("risk_score", 0.5),
-          "verification": result.get("verification_status", "CONFIRMED"),
-          "lifecycle": result.get("lifecycle_status", "Resurfacing"),
-      }
-  )
+  # Build a minimal state snapshot so the dashboard sees the merge
+  eff_state = dict(state)
+  eff_state["abstract"] = f"Merged {len(posts)} new posts into existing trend '{trend_id}'"
+  eff_state["label"] = result.get("label", "MODERATE")
+  eff_state["risk_score"] = result.get("risk_score", 0.5)
+  eff_state["verification"] = result.get("verification_status", "CONFIRMED")
+  eff_state["lifecycle"] = result.get("lifecycle_status", "Resurfacing")
 
   current_results = list(state.get("cluster_results", []))
-  current_results.append(cluster_json)
+  current_results.append(eff_state)
 
   logger.info("MERGE: fast-path completed for trend %s - %d posts merged", trend_id, len(posts))
   return {"cluster_results": current_results}
@@ -210,7 +205,6 @@ def pop_cluster_node(state: AgentState) -> dict:
     "label": None,
     "confidence": 0.0,
     "citations": [],
-    "citations_used_as_support": [],
     "supporting_evidence_ids": [],
     "risk_score": 0.0,
     "reasoning": "",
@@ -226,6 +220,7 @@ def pop_cluster_node(state: AgentState) -> dict:
     "low_confidence": False,
     "research_retries_left": 3,
     "verify_retries_left": 3,
+    "should_monitor": False,
   }
 
 def route_after_pop(state: AgentState) -> Command:

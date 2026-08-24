@@ -13,6 +13,7 @@ import hdbscan
 import numpy as np
 import torch
 import umap
+import html
 from langchain_core.messages import HumanMessage, SystemMessage
 from layers.analysis.utils.llm import invoke_llm
 from pydantic import BaseModel, Field
@@ -21,15 +22,15 @@ from sentence_transformers import SentenceTransformer
 from layers.analysis.core.state import AgentState
 from layers.analysis.db.queries import check_if_trend_exists, find_nearest_trend, write_safe_posts_to_db
 from layers.analysis.utils.batch_cluster_merge import execute_batch_cluster_merge
-from layers.shared.posts import get_engagement
+
 from layers.shared.trends import make_trend_id
 
 logger = logging.getLogger(__name__)
 
 #  Tunable parameters (see eval harness for validation plan)
-MIN_CLUSTER_SIZE = 3
+MIN_CLUSTER_SIZE = 5
 MIN_SAMPLES = 2
-UMAP_N_COMPONENTS = 12
+UMAP_N_COMPONENTS = 8
 UMAP_N_NEIGHBORS = 10
 UMAP_MIN_DIST = 0.0
 CENTROID_MARGIN = 0.08  # relocate if cosine(post, other) > cosine(post, own) + margin
@@ -44,11 +45,7 @@ OBSERVE_MODEL = "gpt-4.1-mini"
 #  Prompt injection hardening ()
 def sanitize_post_text(text: str, max_chars: int = 500) -> str:
   """Escape tag-like sequences and cap length before XML-wrapping."""
-  text = text[:max_chars]
-  text = text.replace("&", "&amp;")
-  text = text.replace("<", "&lt;")
-  text = text.replace(">", "&gt;")
-  return text
+  return html.escape(text[:max_chars])
 
 def get_canonical_caption(posts: list[dict]) -> str:
   """Get the most frequent exact caption in a cluster to use as a deterministic ID anchor."""
@@ -76,8 +73,8 @@ def _wrap_post_xml(post: dict, cluster_label: int | str, centroid_sim: float) ->
     "platform": post.get("platform", "unknown"),
     "sbert_score": f"{post.get('sbert_score', 0.0):.2f}",
     "creator": post.get("creator_id", "unknown"),
-    "likes": str(get_engagement(post, "likes")),
-    "views": str(get_engagement(post, "views")),
+    "likes": str(post.get("likes", 0)),
+    "views": str(post.get("views", 0)),
     "posted_at": post.get("posted_at", ""),
     "hdbscan_cluster": str(cluster_label),
     "centroid_sim": f"{centroid_sim:.2f}",
@@ -286,9 +283,10 @@ Step-by-step analysis:
    - Core Action/Condition (e.g., Foreign Object Insertion, Inflammation, Congestion)
 2. Determine the "Dominant Anatomy" of the cluster based on the majority of posts.
 3. Identify any post that does NOT perfectly match the Dominant Anatomy. You must list these post_ids in `split_post_ids` for ejection. Also split out "teaser" or "update" posts that belong to a viral trend but are lumped with generic clinical posts.
-4. Name this cluster behaviorally (e.g., "condom challenge", "dragon breath challenge"). Keep it short (max 4-5 words).
-5. Write a 1-2 sentence search_context (under 50-100 words) that RESEARCH should use to find academic evidence about this behavior's impact on pediatric ENT health.
-6. Assign a triage_flag: "likely_harmful", "unclear", or "likely_safe".
+4. If the Dominant Anatomy is NOT ear, nose, sinus, throat, tonsil/adenoid, or auditory-system related, set is_ent_related=false, confirmed=false, and put ALL post_ids in split_post_ids. Do this even if the behavior looks genuinely dangerous — out-of-scope harm gets routed elsewhere, not into this system.
+5. Name this cluster behaviorally (e.g., "condom challenge", "dragon breath challenge"). Keep it short (max 4-5 words).
+6. Write a 1-2 sentence search_context (under 50-100 words) that RESEARCH should use to find academic evidence about this behavior's impact on pediatric ENT health.
+7. Assign a triage_flag: "likely_harmful", "unclear", or "likely_safe".
 """
 
 _UNCLASSIFIED_PROMPT = """\
@@ -301,7 +299,7 @@ The existing named clusters are:
 Questions:
 (a) Can any of these posts attach to one of the existing clusters by behavioral \
 meaning (not keyword match)?
-(b) Do any of the remaining posts form their own new group? Name it if so (max 4-5 words, uniquely identifying).
+(b) Do any of the remaining posts form their own new group? Name it if so (max 4-5 words, uniquely identifying). If the new group is NOT related to ear, nose, sinus, throat, tonsil/adenoid, or auditory-system anatomy, set is_ent_related=false (out-of-scope groups will be discarded).
 (c) The rest stay UNCLASSIFIED.
 """
 
@@ -313,8 +311,9 @@ class PostAnalysis(BaseModel):
 class ClusterValidation(BaseModel):
   analysis: list[PostAnalysis] = Field(description="Step 1 analysis for EACH post")
   dominant_anatomy: str = Field(description="Step 2 dominant anatomy")
-  split_post_ids: list[str] = Field(description="Step 3 post IDs to split")
+  split_post_ids: list[str] = Field(description="Step 3/4 post IDs to split")
   confirmed: bool = Field(description="Set to true unless the entire cluster is invalid")
+  is_ent_related: bool = Field(description="True only if the dominant anatomy is ear canal, tympanic membrane, nasal cavity/sinuses, pharynx/throat, tonsils/adenoids, or Eustachian tube/auditory system. False for anything else, even if plausibly harmful.")
   cluster_name: str
   search_context: str
   triage_flag: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="One of: likely_harmful, unclear, likely_safe")
@@ -327,6 +326,7 @@ class NewGroup(BaseModel):
   cluster_name: str
   search_context: str
   triage_flag: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="One of: likely_harmful, unclear, likely_safe")
+  is_ent_related: bool = Field(description="True only if the anatomy is ear canal, tympanic membrane, nasal cavity/sinuses, pharynx/throat, tonsils/adenoids, or Eustachian tube/auditory system. False for anything else, even if plausibly harmful.")
   post_ids: list[str]
 
 class UnclassifiedValidation(BaseModel):
@@ -550,6 +550,10 @@ def observe_node(state: AgentState) -> dict:
 
     # Process new groups from unclassified
     for ng in unc_result.get("new_groups", []):
+      if not ng.get("is_ent_related", True):
+        logger.info("Dropping out-of-scope new group: %s", ng.get("cluster_name"))
+        continue
+
       ng_post_ids = set(ng.get("post_ids", []))
       ng_posts_info = [(i, p) for i, p in noise_posts if p.get("post_id") in ng_post_ids]
       if ng_posts_info:
@@ -583,18 +587,9 @@ def observe_node(state: AgentState) -> dict:
           }
         )
 
-    # Remaining noise → UNCLASSIFIED cluster
-    still_unc_ids = set(unc_result.get("still_unclassified", []))
-    unc_posts = [p for _, p in noise_posts if p.get("post_id") in still_unc_ids]
-    # Also include any noise posts not mentioned at all
-    mentioned_ids = set()
-    mentioned_ids.update(attached_ids)
-    for ng in unc_result.get("new_groups", []):
-      mentioned_ids.update(ng.get("post_ids", []))
-    mentioned_ids.update(still_unc_ids)
-    leftover = [p for _, p in noise_posts if p.get("post_id") not in mentioned_ids]
-    unc_posts.extend(leftover)
-
+    # Remaining noise → UNCLASSIFIED cluster (anything not explicitly attached or put in a new group)
+    mentioned_ids = attached_ids | {pid for ng in unc_result.get("new_groups", []) for pid in ng.get("post_ids", [])}
+    unc_posts = [p for _, p in noise_posts if p.get("post_id") not in mentioned_ids]
     if unc_posts:
       logger.info("OBSERVE: Writing %d unclassified noise posts to DB as SAFE", len(unc_posts))
       try:

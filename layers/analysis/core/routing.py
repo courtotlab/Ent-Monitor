@@ -21,7 +21,7 @@ from layers.analysis.nodes.assess import EVIDENCE_THRESHOLD, build_evidence_gap,
 
 #  Route: after ASSESS
 def route_after_assess(state: AgentState) -> Command:
-  """Edge (1) - ASSESS routes to CLASSIFY (sufficient) or RESEARCH (gap)."""
+  """ASSESS routes to CLASSIFY (sufficient) or RESEARCH (gap)."""
   score = compute_evidence_score(state)
   retries_left = state["research_retries_left"]
 
@@ -48,7 +48,7 @@ def route_after_assess(state: AgentState) -> Command:
 
 #  Route: after CLASSIFY
 def route_after_classify(state: AgentState) -> Command:
-  """Edge (2) - CLASSIFY routes to VERIFY or back to RESEARCH."""
+  """CLASSIFY routes to VERIFY or back to RESEARCH."""
   if state.get("needs_more_evidence") and state["research_retries_left"] > 0:
     return Command(goto="research", update={"research_retries_left": state["research_retries_left"] - 1, "needs_more_evidence": False})
   return Command(goto="verify")
@@ -56,12 +56,12 @@ def route_after_classify(state: AgentState) -> Command:
 
 #  Route: after VERIFY
 def route_after_verify(state: AgentState) -> Command:
-  """Edges (3) (4) - VERIFY routes to DECIDE, RESEARCH, or CLASSIFY."""
+  """VERIFY routes to DECIDE, RESEARCH, or CLASSIFY."""
   finding = state.get("verify_finding") or {}
   retries_left = state.get("verify_retries_left", 0) > 0
 
   # A citation that couldn't be checked (tool failure) is NOT a confirmed-bad
-  # PMID - must not trigger edge (3) or consume verify_retries_left.
+  # PMID - must not trigger failure routing or consume verify_retries_left.
   if finding.get("citation_check_failed"):
     return Command(goto="decide")
 

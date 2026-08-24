@@ -32,7 +32,6 @@ SEVERITY_BANDS = {
 
 # severity ordering for self-consistency tie-breaking (higher index = more severe)
 SEVERITY_ORDER = {"LOW": 0, "MODERATE": 1, "HIGH": 2}
-VERIFICATION_ORDER = {"INSUFFICIENT_EVIDENCE": 0, "PROVISIONAL": 1, "CONFIRMED": 2}
 
 _SYSTEM_PROMPT = """\
 You are scoring and classifying social-media trends for a child-safety monitoring
@@ -42,6 +41,8 @@ verification, supporting_evidence_ids, slang_terms, mechanism_level_match, and r
 ═══════════════════════════════════════════════════════════════
 SEVERITY RUBRIC - use these anchors, not your own judgment of "high"
 ═══════════════════════════════════════════════════════════════
+
+Before rating severity: does the core behavior involve the ear canal, tympanic membrane, nasal cavity/sinuses, throat/pharynx, tonsils/adenoids, or auditory system? If no, output severity=LOW, verification=INSUFFICIENT_EVIDENCE, and set out_of_scope=true, regardless of how strong the evidence for harm is.
 
 Rate severity using these anchors:
 - HIGH: plausible immediate physical harm requiring emergency care if replicated
@@ -68,8 +69,7 @@ LIFECYCLE
 ═══════════════════════════════════════════════════════════════
 
 TREND vs ISOLATED INCIDENT:
-- Minimum 5 distinct posts AND at least 2 distinct platforms AND first_detected
-  to last_seen span of at least 24 hours to qualify as a trend at all.
+- Minimum 5 distinct posts AND at least 2 distinct platforms to qualify as a trend at all.
 - If these thresholds are not met, output lifecycle = "Isolated incident"
   and verification = "INSUFFICIENT_EVIDENCE" (unless clinical evidence exists),
   regardless of severity.
@@ -137,20 +137,19 @@ Evidence ({evidence_count} items):
 STATISTICS FOR TREND THRESHOLD:
 - Total distinct posts: {post_count}
 - Distinct platforms: {platform_count}
-- Time span between first and last post: {time_span_hours:.1f} hours
 
 Based on the evidence and statistics above, classify this cluster.
 """
 
 class ClassificationResult(BaseModel):
-  trend_name: str
   severity: Literal["HIGH", "MODERATE", "LOW"]
   lifecycle: Literal["Emergence", "Growth", "Resurfacing", "Declining", "Latent", "Isolated incident"]
   verification: Literal["CONFIRMED", "PROVISIONAL", "INSUFFICIENT_EVIDENCE"]
   supporting_evidence_ids: list[str] = Field(description="PMIDs (pmid:NNN) or URLs that justify the verification rating")
   slang_terms: list[str] = Field(description="3-5 alternative slang names, misspellings, or hashtags used for this trend")
   mechanism_level_match: bool = Field(description="True if the evidence documents the EXACT behavioral mechanism, False otherwise")
-  rationale: str = Field(description="Extremely brief reasoning (strictly under 50 words)")
+  out_of_scope: bool = Field(description="True if the core behavior does not involve ENT anatomy, False otherwise")
+  rationale: str = Field(description="Strictly under 50 words explaining the rating")
 
 def calculate_deterministic_risk_score(severity: str, verification: str, mechanism_match: bool) -> float:
   """Calculate risk_score using a strict deterministic matrix."""
@@ -173,8 +172,8 @@ def _pick_more_severe(a: ClassificationResult, b: ClassificationResult) -> Class
     return a
   return b
 
-def _build_prompt(state: AgentState) -> tuple[str, dict]:
-  """Build the user prompt from state. Returns (prompt_text, stats_dict)."""
+def _build_prompt(state: AgentState) -> str:
+  """Build the user prompt from state."""
   evidence = state.get("evidence", [])
   cluster_id = state.get("cluster_id", "unknown")
   posts = state.get("posts", [])
@@ -183,37 +182,18 @@ def _build_prompt(state: AgentState) -> tuple[str, dict]:
   platforms = set(p.get("platform", "unknown") for p in posts)
   platform_count = len(platforms)
 
-  time_span_hours = 0.0
-  if posts:
-    try:
-      times = []
-      for p in posts:
-        ts = p.get("posted_at") or p.get("collected_at")
-        if ts:
-          if isinstance(ts, str):
-            times.append(datetime.fromisoformat(ts.replace("Z", "+00:00")))
-          else:
-            times.append(ts)
-      if times:
-        time_span_hours = (max(times) - min(times)).total_seconds() / 3600.0
-    except Exception as exc:
-      logger.warning("Failed to parse timestamps for span calculation: %s", exc)
+  if state.get("is_known_trend") and state.get("matched_trend_id"):
+    post_count += state.get("db_trend_post_count", 0)
+    # If it was previously tracked, assume it likely already hit the platform threshold
+    if state.get("db_trend_post_count", 0) > 0:
+        platform_count = max(platform_count, 2)
 
-  evidence_summary = ""
-  if evidence:
-    lines = []
-    for i, e in enumerate(evidence):
-      rel = "relevant" if e.get("is_relevant") else "not relevant"
-      contra = " [CONTRADICTS harm]" if e.get("contradicts_harm") else ""
-      tier = e.get("source_tier", "unknown")
-      lines.append(
-        f"[{i}] [{e.get('source', 'unknown')}] (tier: {tier}) {e.get('title', 'Untitled')}\n"
-        f"    {rel}{contra}\n"
-        f"    {e.get('snippet', '')[:150]}"
-      )
-    evidence_summary = "\n".join(lines)
-  else:
-    evidence_summary = "(no evidence found)"
+  evidence_summary = "\n".join(
+    f"[{i}] [{e.get('source', 'unknown')}] (tier: {e.get('source_tier', 'unknown')}) {e.get('title', 'Untitled')}\n"
+    f"    {'relevant' if e.get('is_relevant') else 'not relevant'}{' [CONTRADICTS harm]' if e.get('contradicts_harm') else ''}\n"
+    f"    {e.get('snippet', '')[:150]}"
+    for i, e in enumerate(evidence)
+  ) if evidence else "(no evidence found)"
 
   verify_notes = ""
   vf = state.get("verify_finding")
@@ -247,14 +227,9 @@ def _build_prompt(state: AgentState) -> tuple[str, dict]:
     known_trend_context=known_trend_context,
     post_count=post_count,
     platform_count=platform_count,
-    time_span_hours=time_span_hours,
   )
 
-  return prompt, {
-    "post_count": post_count,
-    "platform_count": platform_count,
-    "time_span_hours": time_span_hours,
-  }
+  return prompt
 
 def _invoke_classify(prompt: str) -> ClassificationResult:
   """Single LLM classification call."""
@@ -279,7 +254,7 @@ def classify_node(state: AgentState) -> dict:
   print("  [CLASSIFY] Synthesizing evidence to determine safety label...")
   cluster_id = state.get("cluster_id", "unknown")
 
-  prompt, stats = _build_prompt(state)
+  prompt = _build_prompt(state)
 
   try:
     if ENABLE_SELF_CONSISTENCY:
@@ -332,8 +307,6 @@ def classify_node(state: AgentState) -> dict:
 
     risk_score = calculate_deterministic_risk_score(severity, verification, mechanism_level_match)
 
-  confidence = 1.0
-  
   citations = []
   evidence_list = state.get("evidence", [])
   for eid in supporting_evidence_ids:
@@ -342,7 +315,6 @@ def classify_node(state: AgentState) -> dict:
         citations.append(ev)
         break
         
-  citations_used_as_support = supporting_evidence_ids
   needs_more_evidence = False
 
   logger.info(
@@ -354,14 +326,10 @@ def classify_node(state: AgentState) -> dict:
     "label": severity,
     "lifecycle": lifecycle,
     "verification": verification,
-    "confidence": confidence,
     "citations": citations,
-    "citations_used_as_support": citations_used_as_support,
     "supporting_evidence_ids": supporting_evidence_ids,
     "risk_score": risk_score,
     "reasoning": reasoning,
-    "needs_more_evidence": needs_more_evidence,
-    "evidence_gap": None,
     "low_confidence": low_confidence,
     "slang_terms": slang_terms,
     "mechanism_level_match": mechanism_level_match,

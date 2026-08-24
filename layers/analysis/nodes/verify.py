@@ -3,7 +3,7 @@
 Re-fetches every cited PMID via pubmed_fetch_by_pmid.  Web citations get
 an HTTP HEAD check.  One batched Terra call for relevance checking.
 
-Critical distinction: PMIDNotFoundError (confirmed absent) triggers edge ③.
+Critical distinction: PMIDNotFoundError (confirmed absent) triggers failure routing.
 A tool failure while checking does NOT - it's logged as tool_degraded.
 """
 
@@ -38,7 +38,7 @@ def verify_node(state: AgentState) -> dict:
   citations = state.get("citations", [])
   evidence = state.get("evidence", [])
   label = state.get("label", "MODERATE")
-  tool_errors = list(state.get("tool_errors", []))
+  tool_errors = state.get("tool_errors", [])
 
   if not citations and not evidence:
     # Nothing to verify - pass through

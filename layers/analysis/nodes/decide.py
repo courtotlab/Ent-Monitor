@@ -9,8 +9,7 @@ from __future__ import annotations
 import logging
 
 from layers.analysis.core.state import AgentState
-from layers.analysis.db.queries import write_cluster_to_db
-from layers.analysis.utils.formatters import build_cluster_json
+from layers.analysis.db.queries import write_cluster_to_db, write_safe_posts_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +21,6 @@ def decide_node(state: AgentState) -> dict:
   The decide_router determines whether to proceed to REPORT or skip to pop_cluster.
   """
   cluster_id = state.get("cluster_id", "unknown")
-  posts = state.get("posts", [])
   tool_errors = state.get("tool_errors", [])
   vf = state.get("verify_finding")
   label = state.get("label", "MODERATE")
@@ -42,21 +40,47 @@ def decide_node(state: AgentState) -> dict:
   current_results = list(state.get("cluster_results", []))
 
   if label == "LOW" and not state.get("low_confidence", False):
-    try:
-      minimal_cluster_json = build_cluster_json(
-          state=state,
-          abstract="No detailed report generated (LOW risk).",
-      )
-      write_cluster_to_db(minimal_cluster_json, centroid=state.get("centroid"))
-    except Exception as exc:
-      logger.warning("DECIDE: failed to write LOW posts/cluster to DB - %s", exc)
-      minimal_cluster_json = build_cluster_json(state=state, abstract="No detailed report generated (LOW risk).")
+    eff_state = dict(state)
+    eff_state["abstract"] = "No detailed report generated (LOW risk)."
     
-    current_results.append(minimal_cluster_json)
+    lifecycle = state.get("lifecycle", "Isolated incident")
+    out_of_scope = state.get("out_of_scope", False)
+    
+    if out_of_scope or lifecycle == "Isolated incident":
+      logger.info(
+        "DECIDE: Skipping DB write for LOW trend '%s' (out_of_scope=%s, lifecycle=%s)",
+        cluster_id, out_of_scope, lifecycle
+      )
+      try:
+        write_safe_posts_to_db(eff_state.get("posts", []))
+      except Exception as exc:
+        logger.warning("DECIDE: failed to mark skipped LOW posts as SAFE - %s", exc)
+    else:
+      try:
+        write_cluster_to_db(eff_state, centroid=eff_state.get("centroid"))
+      except Exception as exc:
+        logger.warning("DECIDE: failed to write LOW posts/cluster to DB - %s", exc)
+    
+    current_results.append(eff_state)
+
+  # Calculate true post count including historical DB state
+  post_count = len(state.get("posts", []))
+  if state.get("is_known_trend"):
+    post_count += state.get("db_trend_post_count", 0)
+    
+  lifecycle = state.get("lifecycle", "Isolated incident")
+
+  # Smart Velocity Monitor Scheduling Rule
+  should_monitor = (
+    label == "HIGH" or
+    (label == "MODERATE" and (lifecycle in ("Emergence", "Growth", "Resurfacing") or post_count > 15)) or
+    (label == "LOW" and lifecycle in ("Emergence", "Growth") and post_count > 50)
+  )
 
   return {
     "tool_degraded": tool_degraded,
     "cluster_results": current_results,
+    "should_monitor": should_monitor,
   }
 
 

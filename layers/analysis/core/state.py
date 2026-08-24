@@ -89,7 +89,6 @@ class AgentState(TypedDict):
   verification: Literal["CONFIRMED", "PROVISIONAL", "INSUFFICIENT_EVIDENCE"] | None
   confidence: float
   citations: list[dict]
-  citations_used_as_support: list[str]
   supporting_evidence_ids: list[str]  # PMIDs/URLs that justify the verification rating
   risk_score: float
   reasoning: str
@@ -98,6 +97,7 @@ class AgentState(TypedDict):
   low_confidence: bool  # True when self-consistency check disagrees
   mechanism_level_match: bool
   slang_terms: list[str]
+  should_monitor: bool            # True if label is HIGH or MODERATE → written to monitored_clusters
 
   #  Verification
   verify_finding: VerifyFinding | None
@@ -109,5 +109,5 @@ class AgentState(TypedDict):
   tool_degraded: bool
 
   #  Loop control (split budgets)
-  research_retries_left: int  # starts at 3 - edges (1) (2)
-  verify_retries_left: int  # starts at 3 - edges (3) (4)
+  research_retries_left: int  # starts at 3
+  verify_retries_left: int  # starts at 3

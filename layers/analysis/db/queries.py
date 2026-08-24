@@ -10,9 +10,6 @@ from layers.shared.trends import make_trend_id
 
 logger = logging.getLogger(__name__)
 
-VELOCITY_TRIGGER_THRESHOLD = 5  # posts/hour to activate velocity tracking
-
-
 # Read helpers
 
 def check_if_trend_exists(trend_id: str) -> bool:
@@ -26,7 +23,7 @@ def check_if_trend_exists(trend_id: str) -> bool:
     return False
 
 
-def fetch_unprocessed_posts(threshold: float = 0.3) -> list[dict]:
+def fetch_unprocessed_posts(threshold: float = 0.40) -> list[dict]:
   """Fetch posts that passed SBERT filtering but haven't been classified by the agent yet."""
   with get_connection() as conn, conn.cursor() as cur:
     cur.execute(
@@ -41,23 +38,17 @@ def fetch_unprocessed_posts(threshold: float = 0.3) -> list[dict]:
     )
     rows = cur.fetchall()
 
-    posts = []
-    for row in rows:
-      post_id, platform, caption_text, sbert_score, creator_id, likes, views, posted_at, matched_anchor_id = row
-      posts.append(
-        {
-          "post_id": post_id,
-          "platform": platform,
-          "caption_text": caption_text,
-          "sbert_score": sbert_score,
-          "creator_id": creator_id,
-          "likes": likes,
-          "views": views,
-          "posted_at": posted_at.isoformat() if posted_at else None,
-          "matched_anchor_id": matched_anchor_id,
-        }
-      )
-    return posts
+    return [{
+      "post_id": r[0], 
+      "platform": r[1], 
+      "caption_text": r[2], 
+      "sbert_score": r[3],
+      "creator_id": r[4], 
+      "likes": r[5], 
+      "views": r[6], 
+      "posted_at": r[7].isoformat() if r[7] else None, 
+      "matched_anchor_id": r[8]
+    } for r in rows]
 
 
 def find_nearest_trend(centroid: list[float], threshold: float = 0.95) -> dict | None:
@@ -200,10 +191,9 @@ def complete_agent_run(
     report_lines = []
     trends_classified = 0
     for r in cluster_results:
-      c = r.get("classification", {})
-      label = c.get("label", "?")
-      risk = c.get("risk_score", 0.0)
-      name = r.get("trend", {}).get("trend_name", r.get("cluster_id", "?"))
+      label = r.get("label", "?")
+      risk = r.get("risk_score", 0.0)
+      name = r.get("trend_name", r.get("cluster_id", "?"))
       report_lines.append(f"- **{name}**: {label} (risk {risk:.2f})")
       trends_classified += 1
 
@@ -222,14 +212,7 @@ def complete_agent_run(
               error_message     = %s
           WHERE run_id = %s
         """,
-        (
-          status,
-          len(cluster_results),
-          trends_classified,
-          report_md,
-          error_message,
-          run_id,
-        ),
+        (status, len(cluster_results), len(cluster_results), report_md, error_message, run_id),
       )
     logger.info("DB: completed agent_run %s - status=%s, clusters=%d", run_id, status, len(cluster_results))
   except Exception as exc:
@@ -238,7 +221,7 @@ def complete_agent_run(
 
 # Cluster DB persistence (HARMFUL / CONCERNING clusters)
 
-def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None) -> None:
+def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> None:
   """Persist the cluster classification into trends and posts tables.
 
   Handles both new trend discovery and merging into existing trends:
@@ -249,10 +232,9 @@ def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None)
   - If a post was previously linked to a different trend, decrement that trend's post_count
   - Check for Resurfacing (>14 day gap since last_seen_at)
   """
-  trend_data = cluster_json.get("trend", {})
-  trend_name = trend_data.get("trend_name", "unknown_trend")
-  matched_trend_id = trend_data.get("matched_trend_id")
-  det_trend_id = trend_data.get("deterministic_trend_id")
+  trend_name = state.get("trend_name") or state.get("cluster_id", "unknown_trend")
+  matched_trend_id = state.get("matched_trend_id")
+  det_trend_id = state.get("deterministic_trend_id")
   if matched_trend_id:
     trend_id = matched_trend_id
   elif det_trend_id:
@@ -260,19 +242,21 @@ def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None)
   else:
     trend_id = make_trend_id(trend_name)
 
-  classification = cluster_json.get("classification", {})
-  label = classification.get("label", "SAFE")
-  risk_score = classification.get("risk_score", 0.0)
-  slang_terms = classification.get("slang_terms", [])
+  label = state.get("label", "SAFE")
+  risk_score = state.get("risk_score", 0.0)
+  slang_terms = state.get("slang_terms", [])
+  should_monitor = state.get("should_monitor", False)
+  tool_degraded = state.get("tool_degraded", False)
+  tool_errors = state.get("tool_errors", [])
+  low_confidence = state.get("low_confidence", False)
 
-  post_count = trend_data.get("post_count", 0)
-  abstract = cluster_json.get("abstract", "")
-  search_context = cluster_json.get("search_context", "")
-  harm_mechanism = cluster_json.get("harm_mechanism", "")
-  evidence_data = cluster_json.get("evidence", {})
-  platforms = trend_data.get("platforms", [])
-
-  posts = cluster_json.get("posts", [])
+  posts = state.get("posts", [])
+  post_count = len(posts)
+  abstract = state.get("abstract", "") or state.get("summary", "")
+  search_context = state.get("search_context", "")
+  harm_mechanism = state.get("harm_mechanism", "")
+  evidence_data = state.get("evidence", [])
+  platforms = list(set(p.get("platform", "unknown") for p in posts))
 
   centroid_str = None
   if centroid and isinstance(centroid, (list, tuple)) and len(centroid) > 0:
@@ -290,8 +274,8 @@ def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None)
       existing = cur.fetchone()
       is_new_trend = existing is None
 
-      lifecycle = classification.get("lifecycle", "Isolated incident")
-      verification = classification.get("verification", "PROVISIONAL")
+      lifecycle = state.get("lifecycle", "Isolated incident")
+      verification = state.get("verification", "PROVISIONAL")
 
       if not is_new_trend:
         lifecycle = _check_resurfacing(trend_id, lifecycle, existing[3])
@@ -305,10 +289,11 @@ def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None)
           INSERT INTO trends
             (trend_id, label, risk_score, post_count, platforms, slang_terms,
              verification_status, lifecycle_status, first_detected_at, last_seen_at,
-             abstract, search_context, trend_name, harm_mechanism, evidence, centroid, velocity_next_check_at, lifecycle_history)
+             abstract, search_context, trend_name, harm_mechanism, evidence, centroid,
+             lifecycle_history, should_monitor, velocity_check_count, tool_degraded, tool_errors, low_confidence)
           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector,
-                  NOW() + INTERVAL '24 hours',
-                  jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', %s)))
+                  jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', %s)),
+                  %s, CASE WHEN %s THEN 0 ELSE 0 END, %s, %s, %s)
           ON CONFLICT (trend_id) DO UPDATE SET
             post_count          = trends.post_count + EXCLUDED.post_count,
             risk_score          = GREATEST(trends.risk_score, EXCLUDED.risk_score),
@@ -341,20 +326,24 @@ def write_cluster_to_db(cluster_json: dict, centroid: list[float] | None = None)
             trend_name          = COALESCE(EXCLUDED.trend_name, trends.trend_name),
             search_context      = COALESCE(EXCLUDED.search_context, trends.search_context),
             harm_mechanism      = COALESCE(EXCLUDED.harm_mechanism, trends.harm_mechanism),
-            centroid            = COALESCE(EXCLUDED.centroid, trends.centroid)
+            centroid            = COALESCE(EXCLUDED.centroid, trends.centroid),
+            velocity_check_count= CASE WHEN EXCLUDED.should_monitor THEN 0 ELSE trends.velocity_check_count END,
+            should_monitor      = EXCLUDED.should_monitor OR trends.should_monitor,
+            tool_degraded       = EXCLUDED.tool_degraded,
+            tool_errors         = EXCLUDED.tool_errors,
+            low_confidence      = EXCLUDED.low_confidence
         """,
         (trend_id, label, risk_score, post_count, Json(platforms), Json(slang_terms),
          verification, lifecycle,
-         now, now, abstract or None, search_context or None, trend_name or None, harm_mechanism or None, Json(evidence_data) if evidence_data else None, centroid_str,
-         lifecycle, post_count),
+         now, now, abstract or None, search_context or None, trend_name or None, harm_mechanism or None,
+         Json(evidence_data) if evidence_data else None, centroid_str,
+         lifecycle, post_count,
+         should_monitor, should_monitor, tool_degraded, Json(tool_errors) if tool_errors else None, low_confidence),
       )
 
 
       # 4. Update posts - handle re-assignment from old trends
       _reassign_and_update_posts(cur, posts, trend_id, label)
-
-      # 5. Check burst -> trigger velocity tracking
-      _maybe_trigger_velocity(cur, trend_id)
 
     logger.info(
       "DB: wrote cluster -> trend %s (%s, %s) - %d posts, is_new=%s",
@@ -438,12 +427,8 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
         tuple(update_vals),
       )
 
-
       # Update each post
       _reassign_and_update_posts(cur, posts, trend_id, label)
-
-      # Check burst -> trigger velocity tracking
-      _maybe_trigger_velocity(cur, trend_id)
 
     logger.info("DB: fast-path merged %d posts into trend %s", new_post_count, trend_id)
     return {
@@ -457,118 +442,6 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
   except Exception as exc:
     logger.error("DB: fast-path merge failed for trend %s - %s", trend_id, exc)
     return None
-
-
-# Velocity helpers
-
-def _maybe_trigger_velocity(cur, trend_id: str) -> None:
-  """Check if a trend is bursting (>N posts in the last hour) and schedule velocity tracking."""
-  cur.execute(
-    """
-      SELECT COUNT(*) FROM posts
-      WHERE linked_trend_id = %s
-        AND collected_at >= NOW() - INTERVAL '1 hour'
-    """,
-    (trend_id,),
-  )
-  posts_last_hour = cur.fetchone()[0]
-  if posts_last_hour >= VELOCITY_TRIGGER_THRESHOLD:
-    cur.execute(
-      """
-        UPDATE trends
-        SET velocity_next_check_at = NOW() + INTERVAL '3 hours'
-        WHERE trend_id = %s
-          AND (velocity_next_check_at IS NULL OR velocity_next_check_at > NOW() + INTERVAL '3 hours')
-      """,
-      (trend_id,),
-    )
-    logger.info("DB: velocity tracking triggered for trend %s (%d posts/hour)", trend_id, posts_last_hour)
-
-
-def fetch_trends_due_for_velocity() -> list[dict]:
-  """Fetch trends whose velocity_next_check_at has passed."""
-  try:
-    with get_connection() as conn, conn.cursor() as cur:
-      cur.execute(
-        """
-          SELECT trend_id, velocity_growth_rate, velocity_checked_at,
-                 lifecycle_status, post_count
-          FROM trends
-          WHERE velocity_next_check_at <= NOW()
-        """
-      )
-      rows = cur.fetchall()
-      return [
-        {
-          "trend_id": row[0],
-          "prev_growth_rate": row[1],
-          "last_checked_at": row[2],
-          "lifecycle_status": row[3],
-          "post_count": row[4],
-        }
-        for row in rows
-      ]
-  except Exception as exc:
-    logger.warning("DB: failed to fetch velocity-due trends - %s", exc)
-    return []
-
-
-def fetch_posts_last_12h(trend_id: str) -> list[datetime]:
-  """Fetch collected_at timestamps for all posts linked to a trend in the last 12 hours."""
-  try:
-    with get_connection() as conn, conn.cursor() as cur:
-      cur.execute(
-        """
-          SELECT COALESCE(posted_at, collected_at) FROM posts
-          WHERE linked_trend_id = %s
-            AND COALESCE(posted_at, collected_at) >= NOW() - INTERVAL '12 hours'
-          ORDER BY COALESCE(posted_at, collected_at)
-        """,
-        (trend_id,),
-      )
-      return [row[0] for row in cur.fetchall()]
-  except Exception as exc:
-    logger.warning("DB: failed to fetch 12h posts for %s - %s", trend_id, exc)
-    return []
-
-
-def update_trend_velocity(
-  trend_id: str,
-  growth_rate: float,
-  new_lifecycle: str | None,
-  next_check_hours: int = 24,
-) -> None:
-  """Write velocity computation results and optionally transition lifecycle."""
-  try:
-    with get_connection() as conn, conn.cursor() as cur:
-      if new_lifecycle:
-        cur.execute(
-          """
-            UPDATE trends
-            SET velocity_growth_rate = %s,
-                velocity_checked_at = NOW(),
-                velocity_next_check_at = NOW() + make_interval(hours => %s),
-                lifecycle_status = %s,
-                lifecycle_history = COALESCE(lifecycle_history, '[]'::jsonb) || jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', post_count))
-            WHERE trend_id = %s
-          """,
-          (growth_rate, next_check_hours, new_lifecycle, new_lifecycle, trend_id),
-        )
-      else:
-        cur.execute(
-          """
-            UPDATE trends
-            SET velocity_growth_rate = %s,
-                velocity_checked_at = NOW(),
-                velocity_next_check_at = NOW() + make_interval(hours => %s)
-            WHERE trend_id = %s
-          """,
-          (growth_rate, next_check_hours, trend_id),
-        )
-    logger.info("DB: velocity updated for %s - rate=%.3f, lifecycle=%s", trend_id, growth_rate, new_lifecycle)
-  except Exception as exc:
-    logger.warning("DB: failed to update velocity for %s - %s", trend_id, exc)
-
 
 # SAFE cluster post updates (no trends row needed)
 
@@ -597,3 +470,80 @@ def write_safe_posts_to_db(posts: list[dict]) -> None:
     logger.info("DB: marked %d posts as SAFE", len(posts))
   except Exception as exc:
     logger.warning("DB: failed to mark SAFE posts - %s", exc)
+
+
+# Velocity Monitor - operates directly on the trends table
+# (should_monitor column added by 002_velocity_monitor.sql)
+
+def fetch_trends_to_monitor() -> list[dict]:
+  """Fetch all trends flagged for active velocity monitoring.
+
+  A trend is eligible when:
+    - should_monitor = TRUE
+    - slang_terms is non-empty
+    - centroid is not null (needed for similarity check)
+    - label is HIGH or MODERATE (don't monitor retired LOW trends)
+    - last_seen_at within the last 14 days (hard age cap)
+  """
+  try:
+    with get_connection() as conn, conn.cursor() as cur:
+      cur.execute(
+        """
+          SELECT trend_id, trend_name, label, slang_terms,
+                 centroid::text, post_count,
+                 first_detected_at, velocity_growth_rate, velocity_check_count
+          FROM trends
+          WHERE should_monitor = TRUE
+            AND slang_terms IS NOT NULL
+            AND jsonb_array_length(slang_terms) > 0
+            AND centroid IS NOT NULL
+            AND label IN ('HIGH', 'MODERATE')
+            AND (last_seen_at IS NULL OR last_seen_at >= NOW() - INTERVAL '14 days')
+        """
+      )
+      rows = cur.fetchall()
+      return [{
+        "trend_id": r[0], 
+        "trend_name": r[1], 
+        "label": r[2], 
+        "slang_terms": r[3] or [],
+        "centroid": [float(x) for x in r[4].strip('[]').split(',')] if r[4] else [],
+        "post_count": r[5] or 0, 
+        "first_detected_at": r[6], 
+        "growth_rate": r[7] or 0.0,
+        "velocity_check_count": r[8] or 0
+      } for r in rows]
+  except Exception as exc:
+    logger.warning("DB: failed to fetch monitored trends - %s", exc)
+    return []
+
+
+def update_trend_velocity_monitor(
+  trend_id: str,
+  new_posts_count: int,
+  growth_rate: float,
+  deactivate: bool = False,
+) -> None:
+  """Update velocity fields on the trends row after one monitor check pass.
+
+  If deactivate=True, sets should_monitor=FALSE (stop condition met).
+  """
+  try:
+    with get_connection() as conn, conn.cursor() as cur:
+      cur.execute(
+        """
+          UPDATE trends SET
+            post_count           = post_count + %s,
+            velocity_growth_rate = %s,
+            velocity_check_count = velocity_check_count + 1,
+            should_monitor       = should_monitor AND NOT %s
+          WHERE trend_id = %s
+        """,
+        (new_posts_count, growth_rate, deactivate, trend_id),
+      )
+      if deactivate:
+        logger.info("DB: velocity monitoring deactivated for trend %s (stop condition met)", trend_id)
+      else:
+        logger.info("DB: velocity updated for trend %s - +%d posts, rate=%.2f/h", trend_id, new_posts_count, growth_rate)
+  except Exception as exc:
+    logger.warning("DB: failed to update velocity for trend %s - %s", trend_id, exc)
