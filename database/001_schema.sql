@@ -4,20 +4,13 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Table 1: creators
--- Tiered watch-list of social media accounts producing ENT-relevant content.
+-- Watch-list of social media accounts producing ENT-relevant content.
 CREATE TABLE creators (
     creator_id          TEXT NOT NULL,           -- Platform-native username or ID
     platform            TEXT NOT NULL,           -- tiktok | instagram | youtube | reddit
-    tier                TEXT NOT NULL DEFAULT 'probation', -- core | probation | retired
-    seed_category       TEXT,                    -- Why this creator was added (e.g. 'ear_health'); NULL = auto-discovered
-    first_seen_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    retired_at          TIMESTAMPTZ,             -- Set when tier changes to 'retired'; NULL for active accounts
 
-    PRIMARY KEY (creator_id, platform),
-    CONSTRAINT chk_creators_tier CHECK (tier IN ('core', 'probation', 'retired'))
+    PRIMARY KEY (creator_id, platform)
 );
-
-CREATE INDEX idx_creators_tier ON creators(tier);
 
 -- Table 2: posts
 -- Central fact table for every collected post.
@@ -61,11 +54,10 @@ CREATE TABLE sbert_anchors (
     anchor_id           SERIAL PRIMARY KEY,
     anchor_text         TEXT NOT NULL UNIQUE,    -- Behavioral description used as semantic reference
     embedding           vector(384) NOT NULL,
-    source              TEXT NOT NULL,           -- manual | agent_classified | news_extract | bertrend_cluster
-    added_by            TEXT,                    -- Script or agent run that added this anchor (e.g. 'cold_start_seed')
-    active              BOOLEAN DEFAULT FALSE,   -- Whether this anchor is actively used in gate 3 filtering
+    source              TEXT NOT NULL,           -- manual | news_outcome
+    active              BOOLEAN DEFAULT TRUE,    -- Whether this anchor is actively used in gate 3 filtering
     match_count         INTEGER DEFAULT 0,       -- Posts that had this anchor as their best match and passed threshold
-    added_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    CONSTRAINT chk_sbert_source CHECK (source IN ('manual', 'news_outcome'))
 );
 
 CREATE INDEX idx_anchors_active    ON sbert_anchors(active) WHERE active = TRUE;
@@ -94,11 +86,13 @@ CREATE TABLE trends (
     centroid            vector(384),             -- SBERT embedding centroid for cross-run cluster matching
 
     -- Cluster-level velocity tracking (how fast this trend is spreading)
-    velocity_growth_rate    REAL,               -- Posts/day change rate (+ve = rising, -ve = falling)
-    velocity_checked_at     TIMESTAMPTZ,        -- When velocity was last computed for this trend
-    velocity_next_check_at  TIMESTAMPTZ,        -- When to next compute velocity (default: NOW() + 24h on creation)
+    should_monitor          BOOLEAN DEFAULT FALSE,  -- TRUE for HIGH/MODERATE trends actively being monitored
+    velocity_growth_rate    REAL,               -- Posts/hour change rate (+ve = rising, -ve = falling)
+    velocity_check_count    INTEGER DEFAULT 0,  -- Number of times velocity monitor has checked this (max 3)
 
     low_confidence          BOOLEAN DEFAULT FALSE, -- Set when self-consistency check disagrees
+    tool_degraded           BOOLEAN DEFAULT FALSE, -- True if there were API timeouts/errors during research
+    tool_errors             JSONB,                 -- JSON array of tool errors
 
     CONSTRAINT chk_trends_label CHECK (label IN ('HIGH', 'MODERATE', 'LOW')),
     CONSTRAINT chk_trends_lifecycle CHECK (lifecycle_status IN (
@@ -110,8 +104,6 @@ CREATE TABLE trends (
 CREATE INDEX idx_trends_lifecycle       ON trends(lifecycle_status);
 CREATE INDEX idx_trends_dashboard       ON trends(lifecycle_status, risk_score);
 CREATE INDEX idx_trends_centroid        ON trends USING hnsw (centroid vector_cosine_ops);
-CREATE INDEX idx_trends_velocity_sched  ON trends(velocity_next_check_at)
-    WHERE velocity_next_check_at IS NOT NULL;
 
 -- Table 5: trend_signals
 -- Extracted signals that still require a verification workflow (e.g. news matches).

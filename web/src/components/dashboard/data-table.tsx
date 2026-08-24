@@ -27,23 +27,8 @@ import {
 } from "@/components/ui/table"
 import { fetchRecentTrends, type TrendData } from "@/lib/api"
 
-// Helpers
-
-function formatDate(iso: string | null) {
-  if (!iso) return "-"
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  })
-}
-
-function formatTrendName(trendId: string) {
-  return trendId
-    .replace(/[_-]/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-}
+import { formatDate, formatTrendName } from "@/lib/utils"
+import { RiskBadge } from "@/components/shared/risk-badge"
 
 function LabelBadge({ label }: { label: string }) {
   if (label === "HIGH")
@@ -69,30 +54,6 @@ function LabelBadge({ label }: { label: string }) {
       className="gap-1 text-muted-foreground"
     >
       Low Risk
-    </Badge>
-  )
-}
-
-function RiskBadge({ score }: { score: number }) {
-  const pct = Math.round(score * 100)
-  if (score >= 0.7)
-    return (
-      <Badge
-        variant="destructive"
-        className="tabular-nums bg-destructive/10 text-destructive border-0 hover:bg-destructive/20"
-      >
-        {pct}%
-      </Badge>
-    )
-  if (score >= 0.4)
-    return (
-      <Badge className="tabular-nums bg-amber-500/10 text-amber-600 border-0 dark:text-amber-400">
-        {pct}%
-      </Badge>
-    )
-  return (
-    <Badge variant="outline" className="tabular-nums text-muted-foreground">
-      {pct}%
     </Badge>
   )
 }

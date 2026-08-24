@@ -60,32 +60,8 @@ import { fetchAllTrends, type TrendData } from "@/lib/api"
 
 // Helpers 
 
-type RiskLevel = "HIGH" | "MODERATE" | "LOW"
-
-function formatDate(iso: string | null) {
-  if (!iso) return "-"
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
-}
-
-function formatTrendName(trendId: string) {
-  return trendId
-    .replace(/[_-]/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
-function RiskBadge({ label, score }: { label: RiskLevel; score: number }) {
-  if (label === "HIGH") return (
-    <Badge variant="destructive" className="gap-1 tabular-nums">
-      <AlertTriangleIcon className="size-3" />{score.toFixed(2)}
-    </Badge>
-  )
-  if (label === "MODERATE") return (
-    <Badge className="bg-amber-500/10 text-amber-600 border-0 gap-1 tabular-nums dark:text-amber-400">
-      <AlertTriangleIcon className="size-3" />{score.toFixed(2)}
-    </Badge>
-  )
-  return <Badge variant="outline" className="gap-1 tabular-nums text-muted-foreground">{score.toFixed(2)}</Badge>
-}
+import { formatDate, formatTrendName, type RiskLevel } from "@/lib/utils"
+import { RiskBadge } from "@/components/shared/risk-badge"
 
 const lifecycleStyles: Record<string, string> = {
   Emergence: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-0",
@@ -288,14 +264,16 @@ export function TrendsTable() {
       if (dateRange?.from) {
         const dStr = dateFilterType === "first_detected_at" ? t.first_detected_at : t.last_seen_at
         if (dStr) {
-          const d = new Date(dStr)
-          const from = new Date(dateRange.from)
-          from.setHours(0, 0, 0, 0)
+          // Ensure database string is parsed as UTC
+          const safeStr = dStr.endsWith("Z") || dStr.includes("+") ? dStr : `${dStr}Z`
+          const d = new Date(safeStr)
+          
+          // Construct UTC midnight from the local date picked by the user
+          const from = new Date(Date.UTC(dateRange.from.getFullYear(), dateRange.from.getMonth(), dateRange.from.getDate(), 0, 0, 0, 0))
           if (d < from) matchDate = false
           
           if (dateRange.to) {
-            const to = new Date(dateRange.to)
-            to.setHours(23, 59, 59, 999)
+            const to = new Date(Date.UTC(dateRange.to.getFullYear(), dateRange.to.getMonth(), dateRange.to.getDate(), 23, 59, 59, 999))
             if (d > to) matchDate = false
           }
         } else {

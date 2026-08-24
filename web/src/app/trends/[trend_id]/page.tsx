@@ -6,8 +6,8 @@ import Link from "next/link"
 import { AppNavbar } from "@/components/layout/app-navbar"
 import { fetchTrendDetails, type TrendDetails, type PostData } from "@/lib/api"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardAction, CardFooter } from "@/components/ui/card"
-import { AlertTriangleIcon, AlertCircleIcon, ExternalLinkIcon, ShieldCheckIcon, ActivityIcon, ChevronUpIcon, ChevronDownIcon, ChevronsUpDownIcon } from "lucide-react"
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardAction } from "@/components/ui/card"
+import { ExternalLinkIcon, ShieldCheckIcon, ActivityIcon, ChevronUpIcon, ChevronDownIcon, ChevronsUpDownIcon } from "lucide-react"
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -27,34 +27,8 @@ import {
   type SortingState,
 } from "@tanstack/react-table"
 
-// Helpers
-type RiskLevel = "HIGH" | "MODERATE" | "LOW"
-
-function formatDate(iso: string | null) {
-  if (!iso) return "-"
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
-}
-
-function formatTrendName(trendId: string) {
-  return trendId
-    .replace(/[_-]/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-}
-
-function RiskBadge({ label, score }: { label: RiskLevel; score: number }) {
-  const pct = Math.round(score * 100)
-  if (label === "HIGH" || score >= 0.7) return (
-    <Badge variant="destructive" className="tabular-nums bg-destructive/10 text-destructive border-0 hover:bg-destructive/20">
-      <AlertTriangleIcon className="mr-1 size-3" />{pct}%
-    </Badge>
-  )
-  if (label === "MODERATE" || score >= 0.4) return (
-    <Badge className="tabular-nums bg-amber-500/10 text-amber-600 border-0 dark:text-amber-400 hover:bg-amber-500/20">
-      <AlertCircleIcon className="mr-1 size-3" />{pct}%
-    </Badge>
-  )
-  return <Badge variant="outline" className="tabular-nums text-muted-foreground border-0 bg-muted/50">{pct}%</Badge>
-}
+import { formatDate, formatTrendName } from "@/lib/utils"
+import { RiskBadge } from "@/components/shared/risk-badge"
 
 const lifecycleStyles: Record<string, string> = {
   Emergence: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-0",
@@ -107,15 +81,17 @@ const postColumns: ColumnDef<PostData>[] = [
     accessorKey: "collected_at",
     header: ({ column }) => <SortableHeader column={column} label="Date" />,
     cell: ({ row }) => (
-      <span className="text-muted-foreground text-sm whitespace-nowrap">
-        {formatDate(row.original.collected_at)}
-      </span>
+      <div className="whitespace-nowrap text-muted-foreground tabular-nums px-2">
+        {formatDate(row.original.posted_at || row.original.collected_at)}
+      </div>
     ),
     sortingFn: (a, b) => {
-      const aDate = a.original.collected_at ? new Date(a.original.collected_at).getTime() : 0
-      const bDate = b.original.collected_at ? new Date(b.original.collected_at).getTime() : 0
-      return aDate - bDate
-    }
+      const aDateStr = a.original.posted_at || a.original.collected_at;
+      const bDateStr = b.original.posted_at || b.original.collected_at;
+      const aDate = aDateStr ? new Date(aDateStr).getTime() : 0;
+      const bDate = bDateStr ? new Date(bDateStr).getTime() : 0;
+      return aDate - bDate;
+    },
   },
   {
     accessorKey: "platform",
