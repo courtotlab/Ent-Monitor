@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import json
 import os
-from datetime import datetime
+import logging
 
 from dotenv import load_dotenv
 
@@ -15,6 +15,8 @@ from layers.ingestion.social.instagram import scrape_instagram, scrape_instagram
 from layers.ingestion.social.reddit import scrape_reddit, scrape_reddit_explore
 from layers.ingestion.social.tiktok import scrape_tiktok, scrape_tiktok_explore
 from layers.ingestion.social.youtube import scrape_youtube, scrape_youtube_explore
+
+logger = logging.getLogger(__name__)
 
 
 def parse_creators_json(path: str):
@@ -47,18 +49,18 @@ def save_and_insert(posts, platform_name):
   for post in posts:
     if insert_post(post):
       inserted_count += 1
-  print(f"Inserted {inserted_count} new posts into DB for {platform_name}.")
+  logger.info(f"Inserted {inserted_count} new posts into DB for {platform_name}.")
 
 
 async def run_platform(platform: str, args):
-  print(f"--- Starting {platform.capitalize()} Ingestion ---")
+  logger.info(f"--- Starting {platform.capitalize()} Ingestion ---")
   creators, subreddits = parse_creators_json("config/creators.json")
   
   client = None
   if platform != "reddit":
     client = Actor.new_client() if os.getenv("APIFY_TOKEN") else None
     if not client:
-      print("Missing APIFY_TOKEN")
+      logger.info("Missing APIFY_TOKEN")
       return
 
   tasks = []
@@ -87,7 +89,7 @@ async def run_platform(platform: str, args):
       for _ in range(args.explore_count):
         tasks.append(scrape_reddit_explore(args.reddit_limit))
   except Exception as e:
-    print(f"Failed to setup tasks for {platform}: {e}")
+    logger.error(f"Failed to setup tasks for {platform}: {e}")
     return
 
   posts = []
@@ -95,7 +97,7 @@ async def run_platform(platform: str, args):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for res in results:
       if isinstance(res, Exception):
-        print(f"Task failed during {platform} ingestion: {res}")
+        logger.error(f"Task failed during {platform} ingestion: {res}")
       else:
         posts.extend([post.to_dict() for post in res])
 

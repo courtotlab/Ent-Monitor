@@ -1,6 +1,7 @@
 import asyncio
 import os
 import random
+import logging
 
 from apify import Actor
 from psycopg2.extras import Json
@@ -17,10 +18,12 @@ from layers.ingestion.social.tiktok import scrape_tiktok_search
 from layers.preprocess.semantic_filter import SbertFilter
 from layers.shared.trends import make_trend_id
 
+logger = logging.getLogger(__name__)
+
 SBERT_GT_THRESHOLD = 0.35
 
 async def run_google_trends_worker():
-  print("Starting Google Trends worker")
+  logger.info("Starting Google Trends worker")
   client = Actor.new_client(token=os.getenv("APIFY_TOKEN")) if os.getenv("APIFY_TOKEN") else None
 
   sbert = SbertFilter()
@@ -29,8 +32,8 @@ async def run_google_trends_worker():
   try:
     top_20_trends = download_google_trends_rss(geo="US", normalize=True).get("trends", [])[:20]
   except Exception as e:
-    print(f"Failed to fetch Google Trends RSS: {e}"); return
-  print(f"Fetched {len(top_20_trends)} trending terms from RSS")
+    logger.error(f"Failed to fetch Google Trends RSS: {e}"); return
+  logger.info(f"Fetched {len(top_20_trends)} trending terms from RSS")
 
   recently_processed = get_recent_gt_spikes([t for tt in top_20_trends if (t := tt.get("keyword"))]) if top_20_trends else set()
 
@@ -40,7 +43,7 @@ async def run_google_trends_worker():
     if (title := trend.get("keyword", "")) in recently_processed: continue
 
     try:
-      print(f"Explore: fetching related queries for '{title}'...")
+      logger.info(f"Explore: fetching related queries for '{title}'...")
       rising_queries = [r["query"] for r in download_google_trends_explore(title, geo="US").get("related_queries", {}).get("rising", [])]
       all_enriched.append({"trend_title": title, "traffic": trend.get("volume_text", ""), "rising_queries": rising_queries})
       consecutive_failures = 0
@@ -63,7 +66,7 @@ async def run_google_trends_worker():
       insert_gt_spike(Json({"gt_term": title, "gt_traffic": item.get("traffic"), "gt_rising_queries": passed_queries}), title, make_trend_id(title))
       dispatched_count += 1
     except Exception as e:
-      print(f"DB insert failed for '{title}': {e}")
+      logger.error(f"DB insert failed for '{title}': {e}")
       continue
 
     if client:
@@ -72,11 +75,11 @@ async def run_google_trends_worker():
         if all_posts := [p.to_dict() for r in results if isinstance(r, list) for p in r]:
           post_scores = sbert.score_texts([(p.get("caption_text") or "") + " " + (p.get("transcript_text") or "") for p in all_posts])
           inserted = sum(1 for post, score in zip(all_posts, post_scores) if (post.update({"source": "gtrends_search"}) or True) and insert_post(post, float(score)))
-          print(f"  -> Saved {inserted} new posts into DB for '{title}'")
+          logger.info(f"  -> Saved {inserted} new posts into DB for '{title}'")
       except Exception as e:
-        print(f"Inline Apify fetch failed for '{title}': {e}")
+        logger.error(f"Inline Apify fetch failed for '{title}': {e}")
 
-  print(f"DONE | {len(top_20_trends)} checked | {passed_count} passed | {dispatched_count} dispatched")
+  logger.info(f"DONE | {len(top_20_trends)} checked | {passed_count} passed | {dispatched_count} dispatched")
 
 if __name__ == "__main__":
   asyncio.run(run_google_trends_worker())

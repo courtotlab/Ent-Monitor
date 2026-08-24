@@ -2,6 +2,8 @@ import random
 
 from layers.ingestion.shared.models import NormalizedPost
 from layers.ingestion.shared.normalizer import extract_id, norm_instagram
+import logging
+logger = logging.getLogger(__name__)
 
 
 async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, limit_engagers: int, posts_per_engager: int) -> list[NormalizedPost]:
@@ -27,7 +29,7 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
           norm_instagram(item, "creator_monitor", item.get("ownerUsername", ""))
         )
   except Exception as e:
-    print(f"[IG] Creator scrape error: {e}")
+    logger.error(f"[IG] Creator scrape error: {e}")
 
   if limit_engagers <= 0 or not post_urls:
     return posts
@@ -51,7 +53,7 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
       if len(engagers) >= limit_engagers:
         break
   except Exception as e:
-    print(f"[IG] Engager comments fetch error: {e}")
+    logger.error(f"[IG] Engager comments fetch error: {e}")
 
   engagers = list(engagers)[:limit_engagers]
   if engagers:
@@ -68,7 +70,7 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
         if "error" not in item and (item.get("id") or item.get("shortCode")):
           posts.append(norm_instagram(item, "engager", item.get("ownerUsername", "")))
     except Exception as e:
-      print(f"[IG] Engager posts fetch error: {e}")
+      logger.error(f"[IG] Engager posts fetch error: {e}")
 
   return posts
 
@@ -91,7 +93,7 @@ async def scrape_instagram_explore(client, limit_posts: int) -> list[NormalizedP
       if "error" not in item and (item.get("id") or item.get("shortCode")):
         posts.append(norm_instagram(item, "explore_feed", "explore"))
   except Exception as e:
-    print(f"[IG] Explore scrape error: {e}")
+    logger.error(f"[IG] Explore scrape error: {e}")
 
   return posts
 
@@ -114,6 +116,6 @@ async def scrape_instagram_search(client, keywords: list[str], limit_posts: int,
       if "error" not in item and (item.get("id") or item.get("shortCode")):
         posts.append(norm_instagram(item, source, "search"))
   except Exception as e:
-    print(f"[IG] Search scrape error: {e}")
+    logger.error(f"[IG] Search scrape error: {e}")
 
   return posts

@@ -1,7 +1,10 @@
 import random
+import logging
 
 from layers.ingestion.shared.models import NormalizedPost
 from layers.ingestion.shared.normalizer import norm_youtube
+
+logger = logging.getLogger(__name__)
 
 
 async def scrape_youtube(client, usernames: list[str], limit_posts: int) -> list[NormalizedPost]:
@@ -26,7 +29,7 @@ async def scrape_youtube(client, usernames: list[str], limit_posts: int) -> list
       if item.get("id") or item.get("videoUrl"):
         posts.append(norm_youtube(item, item.get("channelName", "")))
   except Exception as e:
-    print(f"[YT] Scrape error: {e}")
+    logger.error(f"[YT] Scrape error: {e}")
 
   return posts
 
@@ -61,6 +64,6 @@ async def scrape_youtube_explore(client, limit_posts: int) -> list[NormalizedPos
       if item.get("id") or item.get("videoUrl"):
         posts.append(norm_youtube(item, "explore", "explore_feed"))
   except Exception as e:
-    print(f"[YT] Explore scrape error: {e}")
+    logger.error(f"[YT] Explore scrape error: {e}")
 
   return posts

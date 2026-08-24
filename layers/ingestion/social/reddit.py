@@ -1,12 +1,15 @@
 import asyncio
 import os
 import random
+import logging
 
 import praw
 import requests
 
 from layers.ingestion.shared.models import NormalizedPost
 from layers.ingestion.shared.normalizer import norm_reddit
+
+logger = logging.getLogger(__name__)
 
 
 def scrape_reddit_sync(subreddits: list[str], limit_posts: int, source_override: str = None) -> list[NormalizedPost]:
@@ -41,14 +44,14 @@ def scrape_reddit_sync(subreddits: list[str], limit_posts: int, source_override:
             if sub_count >= limit_posts:
               break
         except Exception as e:
-          print(f"[Reddit] Error /r/{sub} with PRAW {sort_method}: {e}")
+          logger.error(f"[Reddit] Error /r/{sub} with PRAW {sort_method}: {e}")
           praw_failed = True
           break
 
         if sub_count >= limit_posts:
           break
     except Exception as e:
-      print(f"[Reddit] Error /r/{sub} via PRAW: {e}")
+      logger.error(f"[Reddit] Error /r/{sub} via PRAW: {e}")
       praw_failed = True
 
     if praw_failed or sub_count < limit_posts:
@@ -77,7 +80,7 @@ def scrape_reddit_sync(subreddits: list[str], limit_posts: int, source_override:
               break
 
         except Exception as e:
-          print(f"[Reddit] Fallback error /r/{sub} with JSON {sort_method}: {e}")
+          logger.error(f"[Reddit] Fallback error /r/{sub} with JSON {sort_method}: {e}")
           continue
 
         if sub_count >= limit_posts:

@@ -1,15 +1,22 @@
 import argparse
+import sys
+from pathlib import Path
 from dataclasses import dataclass, field
+
+# Add the root directory to path so absolute imports work correctly
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from typing import Any
 
-from .filter import run_quality_filter
-from .queries import (
+from layers.preprocess.filter import run_quality_filter
+from layers.preprocess.queries import (
   fetch_active_anchors,
   increment_anchor_match_counts,
   fetch_unprocessed_posts,
   update_preprocessed_posts,
 )
-from .semantic_filter import SBERT_THRESHOLD, SbertFilter
+from layers.preprocess.semantic_filter import SBERT_THRESHOLD, SbertFilter
+import logging
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -22,11 +29,11 @@ class PreprocessStats:
   by_source: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
-def run_preprocessing(limit: int = 1000) -> PreprocessStats:
-  print(f"Fetching up to {limit} unprocessed posts from DB...")
+def run_preprocessing(limit: int = 100000) -> PreprocessStats:
+  logger.info(f"Fetching up to {limit} unprocessed posts from DB...")
   posts = fetch_unprocessed_posts(limit)
   if not posts:
-    print("No unprocessed posts found.")
+    logger.info("No unprocessed posts found.")
     return PreprocessStats()
   return process_posts(posts)
 
@@ -57,19 +64,18 @@ def process_posts(posts: list[dict[str, Any]]) -> PreprocessStats:
     source = post.get("source", "unknown")
     key = (post_id, platform)
     
-    if source not in stats.by_source:
-      stats.by_source[source] = {"input": 0, "quality_passed": 0, "sbert_passed": 0}
-    stats.by_source[source]["input"] += 1
+    d = stats.by_source.setdefault(source, {"input": 0, "quality_passed": 0, "sbert_passed": 0})
+    d["input"] += 1
 
     if key in survivor_keys:
-      stats.by_source[source]["quality_passed"] += 1
+      d["quality_passed"] += 1
       stats.sbert_scored += 1
       
       score, matched_anchor = score_map.get(key, (0.0, None))
       
       if sbert.passes_threshold(score):
         stats.sbert_passed += 1
-        stats.by_source[source]["sbert_passed"] += 1
+        d["sbert_passed"] += 1
         if matched_anchor is not None:
           fired_anchor_ids.append(matched_anchor)
       else:
@@ -80,7 +86,7 @@ def process_posts(posts: list[dict[str, Any]]) -> PreprocessStats:
       # Failed quality filter -> assign -1.0 so it is marked as processed but discarded
       updates.append((post_id, platform, -1.0, None))
 
-  print("Batch updating database...")
+  logger.info("Batch updating database...")
   update_preprocessed_posts(updates)
 
   # Batch-increment match_count for all anchors that fired this run
@@ -91,30 +97,29 @@ def process_posts(posts: list[dict[str, Any]]) -> PreprocessStats:
 
 
 def _print_report(stats: PreprocessStats, quality_stats) -> None:
-  print(f"\nPreprocessing DB Batch")
-  print(f"  Input posts:        {stats.input_total}")
-  print(f"  Quality passed:     {stats.quality_passed}")
-  print(f"    too short:        {quality_stats.too_short}")
-  print(f"    non-english:      {quality_stats.non_english}")
-  print(f"  SBERT scored:       {stats.sbert_scored}")
-  print(f"  SBERT >= {SBERT_THRESHOLD}:     {stats.sbert_passed}")
-  print(f"  SBERT <  {SBERT_THRESHOLD}:     {stats.sbert_failed}")
+  logger.info(f"\nPreprocessing DB Batch")
+  logger.info(f" Input posts: {stats.input_total}")
+  logger.info(f" Quality passed: {stats.quality_passed}")
+  logger.info(f" too short: {quality_stats.too_short}")
+  logger.info(f" non-english: {quality_stats.non_english}")
+  logger.info(f" SBERT scored: {stats.sbert_scored}")
+  logger.info(f" SBERT >= {SBERT_THRESHOLD}: {stats.sbert_passed}")
+  logger.error(f" SBERT < {SBERT_THRESHOLD}: {stats.sbert_failed}")
   if stats.by_source:
-    print("  By source:")
+    logger.info(" By source:")
     for source, counts in sorted(stats.by_source.items()):
-      print(
-        f"    {source}: in={counts['input']} "
+      logger.info(
+        f" {source}: in={counts['input']} "
         f"quality={counts['quality_passed']} "
         f"sbert_pass={counts['sbert_passed']}"
       )
-
 
 def main():
   parser = argparse.ArgumentParser(description="Run preprocessing on DB queue")
   parser.add_argument(
     "--limit",
     type=int,
-    default=1000,
+    default=100000,
     help="Max number of unprocessed posts to fetch",
   )
   args = parser.parse_args()
@@ -122,4 +127,7 @@ def main():
 
 
 if __name__ == "__main__":
+  from layers.preprocess import _preprocess_logger
+  logger.handlers = _preprocess_logger.handlers
+  logger.setLevel(_preprocess_logger.level)
   main()

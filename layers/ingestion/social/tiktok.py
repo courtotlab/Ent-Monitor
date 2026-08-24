@@ -1,7 +1,10 @@
 import random
+import logging
 
 from layers.ingestion.shared.models import NormalizedPost
 from layers.ingestion.shared.normalizer import extract_id, norm_tiktok
+
+logger = logging.getLogger(__name__)
 
 
 async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_engagers: int, posts_per_engager: int) -> list[NormalizedPost]:
@@ -30,7 +33,7 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
           )
         )
   except Exception as e:
-    print(f"[TT] Creator scrape error: {e}")
+    logger.error(f"[TT] Creator scrape error: {e}")
 
   if limit_engagers <= 0 or not post_urls:
     return posts
@@ -53,7 +56,7 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
       if len(engagers) >= limit_engagers:
         break
   except Exception as e:
-    print(f"[TT] Engager comments fetch error: {e}")
+    logger.error(f"[TT] Engager comments fetch error: {e}")
 
   engagers = list(engagers)[:limit_engagers]
   if engagers:
@@ -71,7 +74,7 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
             norm_tiktok(item, "engager", item.get("author", {}).get("uniqueId", ""))
           )
     except Exception as e:
-      print(f"[TT] Engager posts fetch error: {e}")
+      logger.error(f"[TT] Engager posts fetch error: {e}")
 
   return posts
 
@@ -92,7 +95,7 @@ async def scrape_tiktok_explore(client, limit_posts: int) -> list[NormalizedPost
       if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
         posts.append(norm_tiktok(item, "explore_feed", "explore"))
   except Exception as e:
-    print(f"[TT] Explore scrape error: {e}")
+    logger.error(f"[TT] Explore scrape error: {e}")
 
   return posts
 
@@ -116,6 +119,6 @@ async def scrape_tiktok_search(
       if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
         posts.append(norm_tiktok(item, source, "search"))
   except Exception as e:
-    print(f"[TT] Search scrape error: {e}")
+    logger.error(f"[TT] Search scrape error: {e}")
 
   return posts

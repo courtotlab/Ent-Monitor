@@ -57,7 +57,7 @@ def increment_anchor_match_counts(anchor_ids: list[int]) -> None:
       )
 
 
-def fetch_unprocessed_posts(limit: int = 1000) -> list[dict[str, Any]]:
+def fetch_unprocessed_posts(limit: int = 100000) -> list[dict[str, Any]]:
   """Fetch posts that haven't been preprocessed (sbert_score IS NULL)."""
   with get_connection() as conn, conn.cursor() as cur:
     cur.execute(

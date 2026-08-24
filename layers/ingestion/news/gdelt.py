@@ -4,6 +4,7 @@ import re
 import zipfile
 import asyncio
 import os
+import logging
 
 import pandas as pd
 import requests
@@ -25,6 +26,8 @@ from layers.ingestion.shared.queries import (
 from layers.preprocess.semantic_filter import SbertFilter
 from layers.ingestion.social.tiktok import scrape_tiktok_search
 from layers.ingestion.social.instagram import scrape_instagram_search
+
+logger = logging.getLogger(__name__)
 
 USER_AGENT = "Mozilla/5.0 (compatible; ENTSurveillanceBot/1.0)"
 LAST_UPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
@@ -195,11 +198,11 @@ def run_preprocessing_funnel(df: pd.DataFrame) -> pd.DataFrame:
   # Stage 1: V2Themes coarse filter
   df = df.dropna(subset=["V2Themes"])
   df = df[df["V2Themes"].apply(lambda ts: isinstance(ts, str) and not HEALTH_THEMES.isdisjoint({t.split(",")[0] for t in ts.split(";")}))]
-  print(f"[GDELT] Stage 1 (Themes) survivors: {len(df)}")
+  logger.info(f"[GDELT] Stage 1 (Themes) survivors: {len(df)}")
 
   # Stage 2: Geography filter
   df = df[df["V2Locations"].apply(lambda loc: pd.isna(loc) or not str(loc).strip() or any(geo in str(loc) for geo in GEOGRAPHY_LOCATIONS))]
-  print(f"[GDELT] Stage 2 (Geography) survivors: {len(df)}")
+  logger.info(f"[GDELT] Stage 2 (Geography) survivors: {len(df)}")
 
   seen_urls = get_recent_gdelt_seen_urls()
   df = df[~df["DocumentIdentifier"].isin(seen_urls)]
@@ -208,11 +211,11 @@ def run_preprocessing_funnel(df: pd.DataFrame) -> pd.DataFrame:
   df["abs_tone"] = df["parsed_tone"].abs()
   df = df.sort_values("abs_tone", ascending=False).groupby("SourceCommonName").head(3)
   df = df.drop(columns=["parsed_tone", "abs_tone"])
-  print(f"[GDELT] Stage 3 (Deduplication) survivors: {len(df)}")
+  logger.info(f"[GDELT] Stage 3 (Deduplication) survivors: {len(df)}")
 
   # Stage 4: URL slug signal filter
   df = df[df["DocumentIdentifier"].apply(lambda url: SLUG_PATTERN.search(extract_slug(url).replace("-", " ").replace("_", " ")) is not None)]
-  print(f"[GDELT] Stage 4 (Slug) survivors: {len(df)}")
+  logger.info(f"[GDELT] Stage 4 (Slug) survivors: {len(df)}")
 
   # Stage 5: V2Tone filter
   def s5(r):
@@ -221,7 +224,7 @@ def run_preprocessing_funnel(df: pd.DataFrame) -> pd.DataFrame:
     return _parse_tone(r.get("V2Tone", ""), 999.0) <= 1.0
 
   df = df[df.apply(s5, axis=1)]
-  print(f"[GDELT] Stage 5 (Tone) survivors: {len(df)}")
+  logger.info(f"[GDELT] Stage 5 (Tone) survivors: {len(df)}")
   return df
 
 
@@ -301,30 +304,30 @@ def write_to_db(confirmed_articles: list[dict]):
 async def main():
   load_dotenv()
   try:
-    print("[GDELT] Polling for new batch...")
+    logger.info("[GDELT] Polling for new batch...")
     if not (gkg_url := poll_gdelt_lastupdate()):
-      print("[GDELT] No new batch found. Skipping.")
+      logger.info("[GDELT] No new batch found. Skipping.")
       return
 
-    print(f"[GDELT] Downloading and parsing new batch: {gkg_url}")
+    logger.info(f"[GDELT] Downloading and parsing new batch: {gkg_url}")
     df = download_and_parse_gkg(gkg_url)
-    print(f"[GDELT] Loaded {len(df)} raw rows.")
+    logger.info(f"[GDELT] Loaded {len(df)} raw rows.")
 
-    print("[GDELT] Running preprocessing funnel (Stages 1-5)...")
+    logger.info("[GDELT] Running preprocessing funnel (Stages 1-5)...")
     df_filtered = run_preprocessing_funnel(df)
     if df_filtered.empty: return
-    print(f"[GDELT] {len(df_filtered)} rows survived the preprocessing funnel.")
+    logger.info(f"[GDELT] {len(df_filtered)} rows survived the preprocessing funnel.")
 
-    print("[GDELT] Building proxy texts for Stage 6...")
+    logger.info("[GDELT] Building proxy texts for Stage 6...")
     proxy_texts = build_proxy_texts(df_filtered)
     anchors = fetch_sbert_anchors_with_source(["manual", "news_outcome"])
     sbert_filter = SbertFilter()
 
-    print("[GDELT] Running Stage 6 (Batch Proxy SBERT)...")
+    logger.info("[GDELT] Running Stage 6 (Batch Proxy SBERT)...")
     stage6_indices = run_proxy_sbert(proxy_texts, anchors, sbert_filter, threshold=0.28)
-    print(f"[GDELT] {len(stage6_indices)} articles passed Stage 6.")
+    logger.info(f"[GDELT] {len(stage6_indices)} articles passed Stage 6.")
 
-    print("[GDELT] Fetching article content for Stage 7 candidates...")
+    logger.info("[GDELT] Fetching article content for Stage 7 candidates...")
     stage7_candidates = []
     for idx in stage6_indices:
       row = df_filtered.iloc[idx]
@@ -333,10 +336,10 @@ async def main():
       if title or snippet:
         stage7_candidates.append({"article_url": url, "source_name": str(row.get("SourceCommonName", "")), "article_date": str(row.get("DATE", "")), "article_title": title, "behavioral_extract": snippet, "full_text": f"{title}. {snippet}"})
 
-    print(f"[GDELT] Running Stage 7 (Final SBERT) on {len(stage7_candidates)} candidates...")
+    logger.info(f"[GDELT] Running Stage 7 (Final SBERT) on {len(stage7_candidates)} candidates...")
     if confirmed_articles := run_final_sbert(stage7_candidates, anchors, sbert_filter, threshold=0.35):
-      print(f"[GDELT] {len(confirmed_articles)} articles passed final SBERT.")
-      print("[GDELT] Extracting search terms...")
+      logger.info(f"[GDELT] {len(confirmed_articles)} articles passed final SBERT.")
+      logger.info("[GDELT] Extracting search terms...")
       try:
         nlp = spacy.load("en_core_web_sm")
       except OSError as exc:
@@ -345,14 +348,14 @@ async def main():
       for art in confirmed_articles:
         art["search_terms"] = extract_search_terms(art, nlp)
 
-      print("[GDELT] Writing results to database...")
+      logger.info("[GDELT] Writing results to database...")
       write_to_db(confirmed_articles)
-      print(f"[GDELT] Saved {len(confirmed_articles)} actionable stories to DB.")
+      logger.info(f"[GDELT] Saved {len(confirmed_articles)} actionable stories to DB.")
 
       if client := Actor.new_client(token=os.getenv("APIFY_TOKEN")) if os.getenv("APIFY_TOKEN") else None:
         all_terms = list(set(term for art in confirmed_articles for term in art.get("search_terms", [])))
         if all_terms:
-          print(f"[GDELT] Fetching social posts inline for {len(all_terms)} extracted keywords...")
+          logger.info(f"[GDELT] Fetching social posts inline for {len(all_terms)} extracted keywords...")
           for term in all_terms:
             try:
               results = await asyncio.gather(
@@ -363,7 +366,7 @@ async def main():
               all_posts = []
               for r in results:
                 if isinstance(r, list): all_posts.extend(r)
-                else: print(f"Scrape task failed for term '{term}': {r}")
+                else: logger.error(f"Scrape task failed for term '{term}': {r}")
               
               if all_posts:
                 posts_dicts = [p.to_dict() for p in all_posts]
@@ -373,14 +376,14 @@ async def main():
                 for post, score in zip(posts_dicts, post_scores):
                   post["source"] = "gdelt_news"
                   if insert_post(post, float(score)): inserted_count += 1
-                print(f"  -> Saved {inserted_count} new posts into DB for '{term}'")
+                logger.info(f"  -> Saved {inserted_count} new posts into DB for '{term}'")
             except Exception as e:
-              print(f"[GDELT] Inline Apify fetch failed for '{term}': {e}")
+              logger.error(f"[GDELT] Inline Apify fetch failed for '{term}': {e}")
 
     update_gdelt_last_polled_url(gkg_url)
 
   except Exception as e:
-    print(f"Error: {e}")
+    logger.error(f"Error: {e}")
 
 if __name__ == "__main__":
   asyncio.run(main())
