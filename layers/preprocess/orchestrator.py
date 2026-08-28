@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 # Add the root directory to path so absolute imports work correctly
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from typing import Any
+
 
 from layers.preprocess.filter import run_quality_filter
 from layers.preprocess.queries import (
@@ -14,6 +14,7 @@ from layers.preprocess.queries import (
   fetch_unprocessed_posts,
   update_preprocessed_posts,
 )
+from layers.ingestion.shared.models import RawPostDict
 from layers.preprocess.semantic_filter import SBERT_THRESHOLD, SbertFilter
 import logging
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ def run_preprocessing(limit: int = 100000) -> PreprocessStats:
   return process_posts(posts)
 
 
-def process_posts(posts: list[dict[str, Any]]) -> PreprocessStats:
+def process_posts(posts: list[RawPostDict]) -> PreprocessStats:
   """Apply quality and semantic gates, then update the DB."""
   stats = PreprocessStats(input_total=len(posts))
 

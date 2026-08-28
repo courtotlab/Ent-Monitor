@@ -28,12 +28,12 @@ class BatchClusterPayload(BaseModel):
 
 _SYSTEM_PROMPT = """\
 You are a high-context consolidation supervisor for a social media monitoring pipeline.
-Your task is to holistically review a batch of cluster summaries and merge clusters that represent IDENTICAL physical or behavioral actions.
+Your task is to holistically review a batch of cluster summaries and merge clusters ONLY IF they represent the exact same behavioral action and intent.
 
 CRITICAL RULES:
-1. AGGRESSIVE MERGING ACROSS VOCABULARIES: You must aggressively merge clusters representing the same behavior even if one uses viral/social media slang (e.g., "3am flashlight tonsil check") and the other uses strict clinical terminology (e.g., "acute tonsillitis diagnostic screening").
-2. POLYSEMY TRAPS: Strictly avoid merging based on shared ambiguous words if the underlying action differs. For example, if a cluster mentions "flashlight" for "night hiking", NEVER merge it with medical oral checks. 
-3. ANATOMY AND CONDITION BOUNDARIES: Never merge clusters that involve different body parts (e.g., ears vs. mouth) or treat different underlying conditions (e.g., ear infection vs. tongue tie), even if they share a broader theme like "dangerous DIY pediatric remedies". Swallowing an object (like a button battery) is completely different from inserting an object into the ear.
+1. INTENT SEPARATION: Never merge clusters if their primary intent differs. For example, never merge a cluster of parents asking questions about ear infections with a cluster of medical professionals demonstrating earwax removal procedures.
+2. POLYSEMY TRAPS: Strictly avoid merging based on shared ambiguous words if the underlying action differs.
+3. ANATOMY AND CONDITION BOUNDARIES: Never merge clusters that involve different body parts (e.g., ears vs. mouth) or treat different underlying conditions (e.g., ear infection vs. tongue tie). Swallowing an object is completely different from inserting an object into the ear.
 4. BRIEF REASONING: Keep your reasoning very brief to minimize output tokens.
 
 You will receive a JSON payload of clusters, each with a `cluster_id` and representative `samples`.

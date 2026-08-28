@@ -1,8 +1,8 @@
 import os
-from typing import Any
+from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
 
-def invoke_llm(model: str, messages: list, schema: Any = None, temperature: float = 0.0, **kwargs) -> Any:
+def invoke_llm(model: str, messages: list, schema: type[BaseModel] | None = None, temperature: float = 0.0, **kwargs) -> BaseModel | str:
   """Instantiate ChatOpenAI and invoke it, optionally parsing into a Pydantic schema."""
   llm = ChatOpenAI(
     model=model,

@@ -29,9 +29,12 @@ export interface TrendData {
   abstract: string | null
   verification_status: string
   discovery_source: string | null
-  low_confidence?: boolean
   velocity_growth_rate?: number | null
+  should_monitor?: boolean
   evidence?: { url: string; title: string; source: string; pmid: string | null }[]
+  harm_mechanism?: string | null
+  lifecycle_history?: { date: string; status: string; post_count: number }[]
+  slang_terms?: string[] | null
 }
 
 export interface PostData {

@@ -1,14 +1,12 @@
-"""CLASSIFY node - single-shot classification with self-consistency check.
+"""CLASSIFY node - single-shot classification.
 
-One call per cluster (doubled for consistency). Produces severity, risk_score,
-lifecycle, verification, supporting_evidence_ids, and rationale.
-Enforces risk_score band clamping after generation.
+One call per cluster. Produces severity, risk_score, lifecycle, verification,
+supporting_evidence_ids, and rationale.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -21,17 +19,7 @@ logger = logging.getLogger(__name__)
 
 CLASSIFY_MODEL = "gpt-5.1"
 CLASSIFY_REASONING_EFFORT = "medium"
-ENABLE_SELF_CONSISTENCY = False  # Set to True for max safety, False to cut API costs in half
 
-# risk_score must fall within its severity band
-SEVERITY_BANDS = {
-  "HIGH": (0.70, 1.00),
-  "MODERATE": (0.35, 0.69),
-  "LOW": (0.00, 0.34),
-}
-
-# severity ordering for self-consistency tie-breaking (higher index = more severe)
-SEVERITY_ORDER = {"LOW": 0, "MODERATE": 1, "HIGH": 2}
 
 _SYSTEM_PROMPT = """\
 You are scoring and classifying social-media trends for a child-safety monitoring
@@ -166,12 +154,6 @@ def calculate_deterministic_risk_score(severity: str, verification: str, mechani
       
   return round(max(0.0, min(1.0, score)), 2)
 
-def _pick_more_severe(a: ClassificationResult, b: ClassificationResult) -> ClassificationResult:
-  """When self-consistency disagrees, pick the more severe result."""
-  if SEVERITY_ORDER.get(a.severity, 0) >= SEVERITY_ORDER.get(b.severity, 0):
-    return a
-  return b
-
 def _build_prompt(state: AgentState) -> str:
   """Build the user prompt from state."""
   evidence = state.get("evidence", [])
@@ -182,7 +164,7 @@ def _build_prompt(state: AgentState) -> str:
   platforms = set(p.get("platform", "unknown") for p in posts)
   platform_count = len(platforms)
 
-  if state.get("is_known_trend") and state.get("matched_trend_id"):
+  if state.get("matched_trend_id") is not None:
     post_count += state.get("db_trend_post_count", 0)
     # If it was previously tracked, assume it likely already hit the platform threshold
     if state.get("db_trend_post_count", 0) > 0:
@@ -204,7 +186,7 @@ def _build_prompt(state: AgentState) -> str:
     )
 
   known_trend_context = ""
-  if state.get("is_known_trend") and state.get("matched_trend_id"):
+  if state.get("matched_trend_id") is not None:
     db_label = state.get("db_trend_label", "unknown")
     db_risk = state.get("db_trend_risk_score", 0.0)
     db_posts = state.get("db_trend_post_count", 0)
@@ -245,11 +227,9 @@ def _invoke_classify(prompt: str) -> ClassificationResult:
   )
 
 def classify_node(state: AgentState) -> dict:
-  """CLASSIFY node - single-shot with self-consistency check.
+  """CLASSIFY node - single-shot classification.
 
-  Runs classification twice at temp=0. If severity or verification disagree,
-  picks the more severe result and sets low_confidence=True.
-  Clamps risk_score to its declared severity band after generation.
+  Falls back to MODERATE + low_confidence=True when the LLM call fails.
   """
   print("  [CLASSIFY] Synthesizing evidence to determine safety label...")
   cluster_id = state.get("cluster_id", "unknown")
@@ -257,55 +237,31 @@ def classify_node(state: AgentState) -> dict:
   prompt = _build_prompt(state)
 
   try:
-    if ENABLE_SELF_CONSISTENCY:
-      # Run classification twice for self-consistency
-      result_a = _invoke_classify(prompt)
-      result_b = _invoke_classify(prompt)
-  
-      low_confidence = (
-        result_a.severity != result_b.severity
-        or result_a.verification != result_b.verification
-      )
-  
-      if low_confidence:
-        logger.warning(
-          "CLASSIFY: self-consistency DISAGREEMENT for %s - "
-          "run_a: severity=%s verification=%s | run_b: severity=%s verification=%s",
-          cluster_id,
-          result_a.severity, result_a.verification,
-          result_b.severity, result_b.verification,
-        )
-        result = _pick_more_severe(result_a, result_b)
-      else:
-        result = result_a
-    else:
-      # Single run to save costs
-      result = _invoke_classify(prompt)
-      low_confidence = False
+    result = _invoke_classify(prompt)
 
     severity = result.severity
     lifecycle = result.lifecycle
     verification = result.verification
     reasoning = result.rationale
     supporting_evidence_ids = result.supporting_evidence_ids
-    slang_terms = getattr(result, "slang_terms", [])
-    mechanism_level_match = getattr(result, "mechanism_level_match", False)
-
-    risk_score = calculate_deterministic_risk_score(severity, verification, mechanism_level_match)
+    slang_terms = result.slang_terms
+    mechanism_level_match = result.mechanism_level_match
+    out_of_scope = result.out_of_scope
+    low_confidence = False
 
   except Exception as exc:
     logger.error("CLASSIFY LLM failed: %s - defaulting to MODERATE", exc)
     severity = "MODERATE"
-    risk_score = 0.50
     lifecycle = "Isolated incident"
     verification = "INSUFFICIENT_EVIDENCE"
     reasoning = "Classification failed due to internal error."
     supporting_evidence_ids = []
     slang_terms = []
     mechanism_level_match = False
+    out_of_scope = False
     low_confidence = True
 
-    risk_score = calculate_deterministic_risk_score(severity, verification, mechanism_level_match)
+  risk_score = calculate_deterministic_risk_score(severity, verification, mechanism_level_match)
 
   citations = []
   evidence_list = state.get("evidence", [])
@@ -314,8 +270,6 @@ def classify_node(state: AgentState) -> dict:
       if ev.get("pmid") == eid.replace("pmid:", "") or ev.get("url") == eid:
         citations.append(ev)
         break
-        
-  needs_more_evidence = False
 
   logger.info(
     "CLASSIFY: %s severity=%s risk=%.3f lifecycle=%s verification=%s low_confidence=%s",
@@ -333,4 +287,5 @@ def classify_node(state: AgentState) -> dict:
     "low_confidence": low_confidence,
     "slang_terms": slang_terms,
     "mechanism_level_match": mechanism_level_match,
+    "out_of_scope": out_of_scope,
   }

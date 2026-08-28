@@ -175,7 +175,6 @@ def verify_node(state: AgentState) -> dict:
 
       prompt = f"""\
 Current label: {label}
-Confidence: {state.get("confidence", 0.5)}
 Search context (the specific behavior being evaluated): {state.get("search_context", "unknown")}
 Harm hypothesis (the clinical mechanism the evidence should support): {harm_hypothesis}
 Classification reasoning: {state.get("reasoning", "")}

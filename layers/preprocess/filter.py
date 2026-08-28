@@ -1,6 +1,7 @@
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from layers.ingestion.shared.models import RawPostDict
+
 
 from langdetect import LangDetectException, detect
 
@@ -16,7 +17,7 @@ class QualityFilterStats:
 
 @dataclass
 class QualityFilterResult:
-  survivors: list[dict[str, Any]] = field(default_factory=list)
+  survivors: list[RawPostDict] = field(default_factory=list)
   stats: QualityFilterStats = field(default_factory=QualityFilterStats)
 
 
@@ -29,10 +30,10 @@ def _is_english(text: str) -> bool:
   except LangDetectException: return True
 
 
-def run_quality_filter(posts: list[dict[str, Any]]) -> QualityFilterResult:
+def run_quality_filter(posts: list[RawPostDict]) -> QualityFilterResult:
   """Quality filter - language, minimum content."""
   stats = QualityFilterStats()
-  survivors: list[dict[str, Any]] = []
+  survivors: list[RawPostDict] = []
 
   for post in posts:
     caption = post.get("caption_text") or ""

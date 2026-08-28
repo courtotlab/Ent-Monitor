@@ -1,7 +1,9 @@
-from typing import Any
+
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
+
+from layers.ingestion.shared.models import RawPostDict
 
 MODEL_NAME = "all-MiniLM-L6-v2"
 SBERT_THRESHOLD = 0.40
@@ -40,7 +42,7 @@ class SbertFilter:
 
     return [float(score) for score in max_scores]
 
-  def score_posts(self, posts: list[dict[str, Any]]) -> list[tuple[dict[str, Any], float, int | None]]:
+  def score_posts(self, posts: list[RawPostDict]) -> list[tuple[RawPostDict, float, int | None]]:
     """Score posts against anchors."""
     if self._anchor_matrix is None:
       raise RuntimeError("Anchors not loaded. Call load_anchors() first.")

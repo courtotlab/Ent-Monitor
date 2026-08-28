@@ -63,7 +63,6 @@ class AgentState(TypedDict):
   posts: list[dict]
   trend_name: str
   search_context: str
-  is_known_trend: bool
   matched_trend_id: str | None
   triage_flag: str  # "likely_harmful" | "unclear" | "likely_safe"
 
@@ -73,6 +72,7 @@ class AgentState(TypedDict):
   db_trend_post_count: int | None     # how many posts are already linked to this trend
   db_trend_lifecycle: str | None      # current lifecycle stage in DB
   db_trend_last_seen: str | None      # ISO timestamp of last activity
+  db_trend_last_verified: str | None  # ISO timestamp of last full classification; None/old = verdict stale → re-investigate
   centroid: list[float]               # SBERT vector from OBSERVE
 
   #  Research accumulator (append-only)
@@ -87,15 +87,14 @@ class AgentState(TypedDict):
   label: Literal["HIGH", "MODERATE", "LOW"] | None
   lifecycle: Literal["Emergence", "Growth", "Resurfacing", "Declining", "Latent", "Isolated incident"] | None
   verification: Literal["CONFIRMED", "PROVISIONAL", "INSUFFICIENT_EVIDENCE"] | None
-  confidence: float
   citations: list[dict]
   supporting_evidence_ids: list[str]  # PMIDs/URLs that justify the verification rating
   risk_score: float
   reasoning: str
-  needs_more_evidence: bool
-  no_evidence_found: bool
-  low_confidence: bool  # True when self-consistency check disagrees
+
+  low_confidence: bool  # True when CLASSIFY fell back to defaults or VERIFY found unresolved inconsistencies
   mechanism_level_match: bool
+  out_of_scope: bool  # True when CLASSIFY flags the behavior as outside ENT anatomy → LOW clusters skip the trends table
   slang_terms: list[str]
   should_monitor: bool            # True if label is HIGH or MODERATE → written to monitored_clusters
 
@@ -103,7 +102,7 @@ class AgentState(TypedDict):
   verify_finding: VerifyFinding | None
 
   #  Report
-  report: dict | None
+
 
   #  DECIDE flags (set by decide_node, read by REPORT)
   tool_degraded: bool

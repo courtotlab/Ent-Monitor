@@ -102,26 +102,35 @@ const postColumns: ColumnDef<PostData>[] = [
       </Badge>
     ),
   },
-  {
-    accessorKey: "creator_id",
-    header: ({ column }) => <SortableHeader column={column} label="Creator ID" />,
-    cell: ({ row }) => (
-      <span className="font-medium min-w-[120px] inline-block">
-        {row.original.creator_id || <span className="text-muted-foreground font-normal italic">Anonymous</span>}
-      </span>
-    ),
-  },
+
   {
     accessorKey: "caption_text",
     header: "Snippet",
     cell: ({ row }) => {
       const text = row.original.caption_text
+      // Reddit uses 'url', others (TikTok, IG, YouTube) use 'video_url'
+      const url = (row.original.metadata?.url as string) || (row.original.metadata?.video_url as string)
+      
+      const content = text ? (
+        text.length > 75 ? text.substring(0, 75) + "..." : text
+      ) : (
+        <span className="italic text-muted-foreground">No text</span>
+      )
+      
       return (
-        <div className="text-sm truncate max-w-[250px]" title={text || ""}>
-          {text ? (
-            text.length > 50 ? text.substring(0, 50) + "..." : text
+        <div className="text-sm max-w-[350px] whitespace-normal break-words" title={text || ""}>
+          {url ? (
+            <a 
+              href={url} 
+              target="_blank" 
+              rel="noreferrer" 
+              className="inline-flex items-center gap-1.5 font-medium text-primary hover:underline hover:text-primary/80 transition-colors"
+            >
+              <span>{content}</span>
+              <ExternalLinkIcon className="size-3.5 shrink-0 opacity-50 mb-[-2px]" />
+            </a>
           ) : (
-            <span className="italic text-muted-foreground">No text</span>
+            content
           )}
         </div>
       )
@@ -247,14 +256,31 @@ export default function TrendDetailsPage() {
 
                     <div className="flex flex-col gap-2">
                       <h1 className="text-3xl font-bold tracking-tight">{data.trend.trend_name || formatTrendName(trendId)}</h1>
-                      <p className="text-muted-foreground text-sm max-w-3xl leading-relaxed mt-2">
+                      <p className="text-muted-foreground text-sm leading-relaxed mt-2">
                         {data.trend.abstract || "No description available"}
                       </p>
                     </div>
+
+                    {/* Slang & Hashtags (LLM-curated) */}
+                    {data.trend.slang_terms && data.trend.slang_terms.length > 0 && (
+                      <div className="flex flex-col gap-2 mt-1">
+                        <div className="flex items-baseline gap-2">
+                          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Slang & Hashtags</h2>
+                          <span className="text-xs text-muted-foreground/70 italic">(LLM generated · may include invented terms, not verified to exist on platforms)</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {data.trend.slang_terms.map((term, i) => (
+                            <Badge key={i} variant="secondary" className="font-normal rounded-full">
+                              #{term.replace(/^#/, "")}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Section Cards (Mini Scale, like dashboard stats) */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs dark:*:data-[slot=card]:bg-card">
+                  <div className="grid grid-cols-1 min-[500px]:grid-cols-2 lg:grid-cols-4 gap-4 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs dark:*:data-[slot=card]:bg-card">
                     
                     <Card className="@container/card">
                       <CardHeader>
@@ -361,7 +387,7 @@ export default function TrendDetailsPage() {
                       </CardAction>
                     </CardHeader>
                     <CardContent className="px-2 pt-2 sm:px-6 sm:pt-4">
-                      <ChartContainer config={chartConfig} className="aspect-auto h-[300px] w-full">
+                      <ChartContainer config={chartConfig} className="aspect-auto h-[200px] sm:h-[300px] w-full">
                         <AreaChart data={filteredChartData}>
                           <defs>
                             <linearGradient id="fillCount" x1="0" y1="0" x2="0" y2="1">
@@ -515,6 +541,86 @@ export default function TrendDetailsPage() {
                       </div>
                     </div>
 
+                    {/* Harm Mechanism */}
+                    {data.trend.harm_mechanism && (
+                      <div className="flex flex-col gap-2">
+                        <div className="flex flex-col gap-1 px-1">
+                          <h2 className="text-lg font-semibold">Harm Mechanism</h2>
+                          <p className="text-sm text-muted-foreground">Clinical pathway identified by the agent.</p>
+                        </div>
+                        <div className="rounded-lg border bg-destructive/5 border-destructive/15 px-4 py-3">
+                          <p className="text-sm leading-relaxed text-foreground/90">{data.trend.harm_mechanism}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Velocity Monitor */}
+                    {data.trend.should_monitor && (
+                      <div className="flex flex-col gap-2">
+                        <div className="flex flex-col gap-1 px-1">
+                          <h2 className="text-lg font-semibold text-amber-600 dark:text-amber-500 flex items-center gap-2">
+                            <ActivityIcon className="size-4" />
+                            Velocity Monitor
+                          </h2>
+                          <p className="text-sm text-muted-foreground">Real-time growth tracking.</p>
+                        </div>
+
+                        <div className="overflow-hidden rounded-lg border border-amber-500/20 bg-amber-500/5">
+                          <Table>
+                            <TableBody>
+                              <TableRow>
+                                <TableCell className="px-4 py-3 text-amber-900/70 dark:text-amber-500/70 font-medium border-b border-amber-500/10">Status</TableCell>
+                                <TableCell className="px-4 py-3 text-right tabular-nums border-b border-amber-500/10">
+                                  <Badge variant="outline" className="bg-amber-500/10 text-amber-600 dark:text-amber-400 border-0">Active</Badge>
+                                </TableCell>
+                              </TableRow>
+                              <TableRow>
+                                <TableCell className="px-4 py-3 text-amber-900/70 dark:text-amber-500/70 font-medium">Growth Rate</TableCell>
+                                <TableCell className="px-4 py-3 text-right tabular-nums text-amber-700 dark:text-amber-400 font-medium">
+                                  {data.trend.velocity_growth_rate ? `+${data.trend.velocity_growth_rate.toFixed(2)} posts/hr` : "Calculating..."}
+                                </TableCell>
+                              </TableRow>
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Lifecycle History */}
+                    {data.trend.lifecycle_history && data.trend.lifecycle_history.length > 0 && (
+                      <div className="flex flex-col gap-2">
+                        <div className="flex flex-col gap-1 px-1">
+                          <h2 className="text-lg font-semibold">Lifecycle History</h2>
+                          <p className="text-sm text-muted-foreground">Status changes over time.</p>
+                        </div>
+                        <Table wrapperClassName="[&[data-slot=table-container]]:overflow-x-hidden [&[data-slot=table-container]]:overflow-y-auto [&[data-slot=table-container]]:max-h-56 [&[data-slot=table-container]]:rounded-lg [&[data-slot=table-container]]:border custom-scrollbar">
+                          <TableHeader className="sticky top-0 z-10 bg-muted">
+                            <TableRow>
+                              <TableHead className="px-4">Date</TableHead>
+                              <TableHead className="px-4">Status</TableHead>
+                              <TableHead className="px-4 text-right">Posts</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {[...data.trend.lifecycle_history].reverse().map((entry, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="px-4 py-2 tabular-nums text-muted-foreground text-xs whitespace-nowrap">
+                                  {new Date(entry.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                                </TableCell>
+                                <TableCell className="px-4 py-2">
+                                  <LifecycleBadge status={entry.status} />
+                                </TableCell>
+                                <TableCell className="px-4 py-2 text-right tabular-nums text-sm">
+                                  {entry.post_count.toLocaleString()}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    )}
+
+                    {/* Timeline */}
                     <div className="flex flex-col gap-2">
                       <div className="flex flex-col gap-1 px-1">
                         <h2 className="text-lg font-semibold">Timeline</h2>
@@ -536,6 +642,8 @@ export default function TrendDetailsPage() {
                         </Table>
                       </div>
                     </div>
+
+
 
                   </div>
                 </aside>

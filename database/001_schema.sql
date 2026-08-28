@@ -41,12 +41,7 @@ CREATE TABLE posts (
 );
 
 CREATE INDEX idx_posts_collected          ON posts(collected_at);
-CREATE INDEX idx_posts_source             ON posts(source);
-CREATE INDEX idx_posts_metadata           ON posts USING gin(metadata);
-CREATE INDEX idx_posts_gate4_category     ON posts(gate4_category);
 CREATE INDEX idx_posts_linked_trend       ON posts(linked_trend_id) WHERE linked_trend_id IS NOT NULL;
-CREATE INDEX idx_posts_creator_confirm    ON posts(creator_id, platform) WHERE gate4_category IN ('HIGH', 'MODERATE');
-CREATE INDEX idx_posts_matched_anchor     ON posts(matched_anchor_id) WHERE matched_anchor_id IS NOT NULL;
 
 -- Table 3: sbert_anchors
 -- Semantic anchors used for pre-filtering (Gate 3).
@@ -61,7 +56,6 @@ CREATE TABLE sbert_anchors (
 );
 
 CREATE INDEX idx_anchors_active    ON sbert_anchors(active) WHERE active = TRUE;
-CREATE INDEX idx_anchors_embedding ON sbert_anchors USING hnsw (embedding vector_cosine_ops);
 
 -- Table 4: trends
 -- Detected trends and their lifecycle states.
@@ -75,6 +69,7 @@ CREATE TABLE trends (
     discovery_source    TEXT,                    -- How the trend was initially discovered (e.g. gdelt_news)
     first_detected_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at        TIMESTAMPTZ,             -- Timestamp when the last post was linked to this trend
+    last_verified_at    TIMESTAMPTZ,             -- When the agent last ran full classification for this trend (fast-path merges do NOT refresh this)
     lifecycle_status    TEXT NOT NULL DEFAULT 'Isolated incident', -- Emergence | Growth | Resurfacing | Declining | Latent | Isolated incident
     lifecycle_history   JSONB DEFAULT '[]',      -- Time-series of lifecycle status and post counts: [{"date": "...", "status": "...", "post_count": 0}]
     verification_status TEXT DEFAULT 'PROVISIONAL', -- CONFIRMED | PROVISIONAL | INSUFFICIENT_EVIDENCE
@@ -90,9 +85,6 @@ CREATE TABLE trends (
     velocity_growth_rate    REAL,               -- Posts/hour change rate (+ve = rising, -ve = falling)
     velocity_check_count    INTEGER DEFAULT 0,  -- Number of times velocity monitor has checked this (max 3)
 
-    low_confidence          BOOLEAN DEFAULT FALSE, -- Set when self-consistency check disagrees
-    tool_degraded           BOOLEAN DEFAULT FALSE, -- True if there were API timeouts/errors during research
-    tool_errors             JSONB,                 -- JSON array of tool errors
 
     CONSTRAINT chk_trends_label CHECK (label IN ('HIGH', 'MODERATE', 'LOW')),
     CONSTRAINT chk_trends_lifecycle CHECK (lifecycle_status IN (
@@ -101,8 +93,6 @@ CREATE TABLE trends (
         'CONFIRMED', 'PROVISIONAL', 'INSUFFICIENT_EVIDENCE'))
 );
 
-CREATE INDEX idx_trends_lifecycle       ON trends(lifecycle_status);
-CREATE INDEX idx_trends_dashboard       ON trends(lifecycle_status, risk_score);
 CREATE INDEX idx_trends_centroid        ON trends USING hnsw (centroid vector_cosine_ops);
 
 -- Table 5: trend_signals
@@ -118,7 +108,7 @@ CREATE TABLE trend_signals (
     dismissed           BOOLEAN DEFAULT FALSE,   -- TRUE if a clinician dismissed this signal
     detected_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT chk_signals_type CHECK (signal_type IN ('news_match', 'slow_spread', 'gt_spike'))
+    CONSTRAINT chk_signals_type CHECK (signal_type IN ('news_match', 'slow_spread', 'gt_spike', 'early_warning'))
 );
 
 CREATE INDEX idx_signals_pending      ON trend_signals(search_status) WHERE search_status = 'pending';
@@ -163,8 +153,7 @@ CREATE TABLE agent_runs (
     CONSTRAINT chk_agent_status CHECK (status IN ('running', 'completed', 'failed', 'timeout'))
 );
 
-CREATE INDEX idx_agent_runs_status  ON agent_runs(status);
-CREATE INDEX idx_agent_runs_started ON agent_runs(started_at);
+
 
 -- Helper Table 1: gdelt_seen_articles
 -- URL deduplication for GDELT worker.

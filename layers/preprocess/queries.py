@@ -1,8 +1,9 @@
 import json
 from datetime import UTC, datetime
-from typing import Any
+
 
 from psycopg2.extras import Json, execute_values
+from layers.ingestion.shared.models import RawPostDict
 
 from layers.shared.db import get_connection
 from layers.shared.embedding import deserialize
@@ -57,7 +58,7 @@ def increment_anchor_match_counts(anchor_ids: list[int]) -> None:
       )
 
 
-def fetch_unprocessed_posts(limit: int = 100000) -> list[dict[str, Any]]:
+def fetch_unprocessed_posts(limit: int = 100000) -> list[RawPostDict]:
   """Fetch posts that haven't been preprocessed (sbert_score IS NULL)."""
   with get_connection() as conn, conn.cursor() as cur:
     cur.execute(

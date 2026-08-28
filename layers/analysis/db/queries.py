@@ -12,17 +12,6 @@ logger = logging.getLogger(__name__)
 
 # Read helpers
 
-def check_if_trend_exists(trend_id: str) -> bool:
-  """Check if a trend with this exact derived ID already exists in the database."""
-  try:
-    with get_connection() as conn, conn.cursor() as cur:
-      cur.execute("SELECT 1 FROM trends WHERE trend_id = %s", (trend_id,))
-      return cur.fetchone() is not None
-  except Exception as exc:
-    logger.warning("Database unavailable (%s) defaulting is_known_trend to False", exc)
-    return False
-
-
 def fetch_unprocessed_posts(threshold: float = 0.40) -> list[dict]:
   """Fetch posts that passed SBERT filtering but haven't been classified by the agent yet."""
   with get_connection() as conn, conn.cursor() as cur:
@@ -51,6 +40,25 @@ def fetch_unprocessed_posts(threshold: float = 0.40) -> list[dict]:
     } for r in rows]
 
 
+def get_recent_post_count(trend_id: str, days: int = 7) -> int:
+  """Get the number of posts assigned to a specific trend within the last X days."""
+  if not trend_id:
+    return 0
+    
+  with get_connection() as conn, conn.cursor() as cur:
+    cur.execute(
+      """
+        SELECT COUNT(*)
+        FROM posts
+        WHERE linked_trend_id = %s
+        AND COALESCE(posted_at, collected_at) >= NOW() - (%s * INTERVAL '1 day')
+      """,
+      (trend_id, days)
+    )
+    result = cur.fetchone()
+    return result[0] if result else 0
+
+
 def find_nearest_trend(centroid: list[float], threshold: float = 0.95) -> dict | None:
   """Use pgvector HNSW index to find the closest DB trend to a centroid.
 
@@ -69,6 +77,7 @@ def find_nearest_trend(centroid: list[float], threshold: float = 0.95) -> dict |
         """
           SELECT trend_id, label, risk_score, search_context, post_count,
                  lifecycle_status, verification_status, last_seen_at,
+                 last_verified_at,
                  1 - (centroid <=> %s::vector) AS similarity
           FROM trends
           WHERE centroid IS NOT NULL
@@ -91,7 +100,8 @@ def find_nearest_trend(centroid: list[float], threshold: float = 0.95) -> dict |
         "lifecycle_status": row[5],
         "verification_status": row[6],
         "last_seen_at": row[7].isoformat() if row[7] else None,
-        "similarity": row[8],
+        "last_verified_at": row[8].isoformat() if row[8] else None,
+        "similarity": row[9],
       }
   except Exception as exc:
     logger.warning("DB: pgvector KNN query failed - %s", exc)
@@ -159,6 +169,27 @@ def _reassign_and_update_posts(cur, posts: list[dict], trend_id: str, label: str
       (label, trend_id, p_id, p_platform),
     )
     logger.info("Updated post_id=%s platform=%s rowcount=%d", p_id, p_platform, cur.rowcount)
+
+
+def _recompute_post_count(cur, trend_id: str) -> int:
+  """Self-healing reconciliation: set trends.post_count = actual linked posts.
+
+  Counters maintained by `+len(posts)` increments drift when posts are skipped
+  inside `_reassign_and_update_posts` (missing p_id/platform, rowcount=0 updates),
+  when velocity jobs increment without relinking, or when re-runs hit already-linked
+  posts. Recomputing from the source-of-truth (the linked_trend_id FK) closes all
+  of these gaps in one statement.
+  """
+  cur.execute(
+    "SELECT COUNT(*) FROM posts WHERE linked_trend_id = %s",
+    (trend_id,),
+  )
+  actual = cur.fetchone()[0]
+  cur.execute(
+    "UPDATE trends SET post_count = %s WHERE trend_id = %s",
+    (actual, trend_id),
+  )
+  return actual
 
 
 # Agent run tracking
@@ -231,6 +262,8 @@ def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> Non
   - Update posts with gate4_category, linked_trend_id
   - If a post was previously linked to a different trend, decrement that trend's post_count
   - Check for Resurfacing (>14 day gap since last_seen_at)
+  - Refresh last_verified_at - the verdict clock read by route_after_pop's merge gating
+    (fast-path merges intentionally do NOT refresh it; see merge_posts_into_trend)
   """
   trend_name = state.get("trend_name") or state.get("cluster_id", "unknown_trend")
   matched_trend_id = state.get("matched_trend_id")
@@ -246,8 +279,6 @@ def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> Non
   risk_score = state.get("risk_score", 0.0)
   slang_terms = state.get("slang_terms", [])
   should_monitor = state.get("should_monitor", False)
-  tool_degraded = state.get("tool_degraded", False)
-  tool_errors = state.get("tool_errors", [])
   low_confidence = state.get("low_confidence", False)
 
   posts = state.get("posts", [])
@@ -289,11 +320,12 @@ def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> Non
           INSERT INTO trends
             (trend_id, label, risk_score, post_count, platforms, slang_terms,
              verification_status, lifecycle_status, first_detected_at, last_seen_at,
+             last_verified_at,
              abstract, search_context, trend_name, harm_mechanism, evidence, centroid,
-             lifecycle_history, should_monitor, velocity_check_count, tool_degraded, tool_errors, low_confidence)
-          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector,
+             lifecycle_history, should_monitor, velocity_check_count, low_confidence)
+          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector,
                   jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', %s)),
-                  %s, CASE WHEN %s THEN 0 ELSE 0 END, %s, %s, %s)
+                  %s, CASE WHEN %s THEN 0 ELSE 0 END, %s)
           ON CONFLICT (trend_id) DO UPDATE SET
             post_count          = trends.post_count + EXCLUDED.post_count,
             risk_score          = GREATEST(trends.risk_score, EXCLUDED.risk_score),
@@ -304,6 +336,7 @@ def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> Non
                                   END,
             verification_status = EXCLUDED.verification_status,
             lifecycle_status    = EXCLUDED.lifecycle_status,
+            last_verified_at    = EXCLUDED.last_verified_at,
             lifecycle_history   = COALESCE(trends.lifecycle_history, '[]'::jsonb) || 
                                   jsonb_build_array(jsonb_build_object('date', NOW(), 'status', EXCLUDED.lifecycle_status, 'post_count', trends.post_count + EXCLUDED.post_count)),
             platforms           = (
@@ -329,21 +362,23 @@ def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> Non
             centroid            = COALESCE(EXCLUDED.centroid, trends.centroid),
             velocity_check_count= CASE WHEN EXCLUDED.should_monitor THEN 0 ELSE trends.velocity_check_count END,
             should_monitor      = EXCLUDED.should_monitor OR trends.should_monitor,
-            tool_degraded       = EXCLUDED.tool_degraded,
-            tool_errors         = EXCLUDED.tool_errors,
             low_confidence      = EXCLUDED.low_confidence
         """,
         (trend_id, label, risk_score, post_count, Json(platforms), Json(slang_terms),
          verification, lifecycle,
-         now, now, abstract or None, search_context or None, trend_name or None, harm_mechanism or None,
+         now, now, now, abstract or None, search_context or None, trend_name or None, harm_mechanism or None,
          Json(evidence_data) if evidence_data else None, centroid_str,
          lifecycle, post_count,
-         should_monitor, should_monitor, tool_degraded, Json(tool_errors) if tool_errors else None, low_confidence),
+         should_monitor, should_monitor, low_confidence),
       )
 
 
       # 4. Update posts - handle re-assignment from old trends
       _reassign_and_update_posts(cur, posts, trend_id, label)
+
+      # 5. Self-heal post_count: trust the linked FK, not the running counter.
+      actual = _recompute_post_count(cur, trend_id)
+      logger.info("DB: recomputed post_count for %s -> %d", trend_id, actual)
 
     logger.info(
       "DB: wrote cluster -> trend %s (%s, %s) - %d posts, is_new=%s",
@@ -430,12 +465,16 @@ def merge_posts_into_trend(trend_id: str, posts: list[dict], new_centroid: list[
       # Update each post
       _reassign_and_update_posts(cur, posts, trend_id, label)
 
+      # Self-heal post_count: trust the linked FK, not the running counter.
+      actual_post_count = _recompute_post_count(cur, trend_id)
+      logger.info("DB: recomputed post_count for %s -> %d", trend_id, actual_post_count)
+
     logger.info("DB: fast-path merged %d posts into trend %s", new_post_count, trend_id)
     return {
       "trend_id": trend_id,
       "label": label,
       "risk_score": risk_score,
-      "post_count": existing_post_count + new_post_count,
+      "post_count": actual_post_count,
       "lifecycle_status": new_lifecycle,
       "verification_status": verification,
     }
@@ -470,6 +509,110 @@ def write_safe_posts_to_db(posts: list[dict]) -> None:
     logger.info("DB: marked %d posts as SAFE", len(posts))
   except Exception as exc:
     logger.warning("DB: failed to mark SAFE posts - %s", exc)
+
+
+# Early-warning signals - lone professional-warning / harmful-advice posts
+# diverted by OBSERVE instead of dying in the SAFE sink. They promote into a
+# full-pipeline cluster once enough of the same behavior accumulate.
+
+def insert_early_warning_signal(
+  post_id: str,
+  platform: str,
+  caption_text: str,
+  intent: str,
+  embedding: list[float],
+  search_query: str,
+) -> bool:
+  """Store one high-value unclassified post as a pending early_warning signal.
+
+  Returns False when this post_id already has a pending early_warning (dedup),
+  True when a new row was inserted.
+  """
+  try:
+    embedding_json = json.dumps([float(x) for x in embedding])
+    with get_connection() as conn, conn.cursor() as cur:
+      cur.execute(
+        """
+          SELECT 1 FROM trend_signals
+          WHERE signal_type = 'early_warning'
+            AND search_status = 'pending'
+            AND signal_data->>'post_id' = %s
+          LIMIT 1
+        """,
+        (post_id,),
+      )
+      if cur.fetchone():
+        return False
+
+      cur.execute(
+        """
+          INSERT INTO trend_signals (
+            signal_type, signal_data, search_query, search_platforms, search_status
+          ) VALUES (
+            'early_warning',
+            jsonb_build_object(
+              'post_id', %s, 'platform', %s, 'caption_text', %s,
+              'intent', %s, 'embedding', %s::jsonb
+            ),
+            %s, %s::jsonb, 'pending'
+          )
+        """,
+        (
+          post_id, platform, caption_text, intent, embedding_json,
+          search_query, json.dumps([platform]),
+        ),
+      )
+    return True
+  except Exception as exc:
+    logger.warning("DB: failed to insert early_warning signal for post %s - %s", post_id, exc)
+    return False
+
+
+def fetch_pending_early_warnings() -> list[dict]:
+  """Fetch pending early_warning signals for cross-run promotion grouping."""
+  try:
+    with get_connection() as conn, conn.cursor() as cur:
+      cur.execute(
+        """
+          SELECT signal_id, search_query, signal_data, detected_at
+          FROM trend_signals
+          WHERE signal_type = 'early_warning'
+            AND dismissed = FALSE
+            AND search_status = 'pending'
+          ORDER BY detected_at
+        """
+      )
+      return [
+        {
+          "signal_id": r[0],
+          "search_query": r[1] or "",
+          "signal_data": r[2] or {},
+          "detected_at": r[3].isoformat() if r[3] else None,
+        }
+        for r in cur.fetchall()
+      ]
+  except Exception as exc:
+    logger.warning("DB: failed to fetch pending early_warnings - %s", exc)
+    return []
+
+
+def mark_early_warnings_promoted(signal_ids: list[int]) -> None:
+  """Flip consumed early_warnings to search_status='promoted' after promotion."""
+  if not signal_ids:
+    return
+  try:
+    with get_connection() as conn, conn.cursor() as cur:
+      cur.execute(
+        """
+          UPDATE trend_signals
+          SET    search_status = 'promoted'
+          WHERE  signal_id = ANY(%s)
+        """,
+        (signal_ids,),
+      )
+    logger.info("DB: marked %d early_warning(s) promoted", len(signal_ids))
+  except Exception as exc:
+    logger.warning("DB: failed to mark early_warnings promoted - %s", exc)
 
 
 # Velocity Monitor - operates directly on the trends table

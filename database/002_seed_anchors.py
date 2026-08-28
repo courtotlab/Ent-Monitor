@@ -73,6 +73,10 @@ SEED_ANCHORS = [
   "putting garlic oil or essential oil drops directly into a child's ear to treat an infection at home",
   "treating a child's ear or sinus infection using only kitchen ingredients instead of seeing a doctor",
   "performing a hearing test on a child using phone speakers instead of professional equipment",
+  "pouring bleach or other household chemicals into a child's nose or ear as a home remedy",
+  "using an undiluted corrosive cleaning product on a child's nose or ear to treat congestion or infection",
+  "squirting hydrogen peroxide directly into a child's nose to clear congestion",
+  "applying a caustic or chemical substance inside a child's nasal cavity or ear canal instead of seeing a doctor",
  
   # viral format signals
   "a viral dare on social media telling viewers not to try this at home",

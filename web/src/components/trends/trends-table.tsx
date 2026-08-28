@@ -29,6 +29,7 @@ import {
 import { format } from "date-fns"
 import { type DateRange } from "react-day-picker"
 
+import { useIsMobile } from "@/hooks/use-mobile"
 import { Calendar } from "@/components/ui/calendar"
 import {
   Popover,
@@ -205,6 +206,7 @@ const columns: ColumnDef<TrendData>[] = [
 // Main component 
 
 export function TrendsTable() {
+  const isMobile = useIsMobile()
   const [allTrends, setAllTrends] = React.useState<TrendData[]>([])
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState(false)
@@ -219,6 +221,7 @@ export function TrendsTable() {
   const [sorting, setSorting] = React.useState<SortingState>([
     { id: "first_detected_at", desc: true },
   ])
+  const deferredSearch = React.useDeferredValue(search)
 
   // Fetch trends from the API
   React.useEffect(() => {
@@ -243,7 +246,7 @@ export function TrendsTable() {
 
   // Apply search + filter before table sees data
   const filtered = React.useMemo(() => {
-    const q = search.toLowerCase()
+    const q = deferredSearch.toLowerCase()
     return allTrends.filter((t) => {
       const name = (t.trend_name || formatTrendName(t.trend_id)).toLowerCase()
       const matchSearch = !q || name.includes(q) ||
@@ -283,7 +286,7 @@ export function TrendsTable() {
 
       return matchSearch && matchRisk && matchStatus && matchPlatform && matchPosts && matchDate
     })
-  }, [allTrends, search, riskFilter, statusFilter, platformFilter, postsFilter, dateRange, dateFilterType])
+  }, [allTrends, deferredSearch, riskFilter, statusFilter, platformFilter, postsFilter, dateRange, dateFilterType])
 
   const table = useReactTable({
     data: filtered,
@@ -433,7 +436,7 @@ export function TrendsTable() {
                 defaultMonth={dateRange?.from}
                 selected={dateRange}
                 onSelect={setDateRange}
-                numberOfMonths={2}
+                numberOfMonths={isMobile ? 1 : 2}
               />
               <div className="p-3 border-t flex items-center justify-between bg-muted/20">
                 <div className="flex items-center gap-3">

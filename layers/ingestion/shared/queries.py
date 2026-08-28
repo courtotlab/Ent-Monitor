@@ -1,8 +1,8 @@
 import json
 from datetime import UTC, datetime
-from typing import Any
 
 from psycopg2.extras import Json
+from layers.ingestion.shared.models import RawPostDict
 
 from layers.shared.db import get_connection
 from layers.shared.embedding import deserialize
@@ -21,7 +21,7 @@ def _parse_ts(value: str | None) -> datetime | None:
   return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 def insert_post(
-  post: dict[str, Any],
+  post: RawPostDict,
   sbert_score: float | None = None,
   matched_anchor_id: int | None = None,
 ) -> bool:

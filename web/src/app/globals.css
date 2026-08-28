@@ -120,13 +120,18 @@ html {
 }
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-    }
-  body {
-    @apply bg-background text-foreground;
-    }
-  html {
-    @apply font-sans;
-    }
+  html, body, main { scrollbar-width: none; }
+  html::-webkit-scrollbar, body::-webkit-scrollbar, main::-webkit-scrollbar { display: none; }
+  * { @apply border-border outline-ring/50; }
+  body { @apply bg-background text-foreground; }
+  html { @apply font-sans; }
+}
+
+@layer utilities {
+  .custom-scrollbar::-webkit-scrollbar { -webkit-appearance: none; width: 8px; height: 8px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.02); border-radius: 10px; }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(150, 150, 150, 0.5); border-radius: 10px;
+    border: 2px solid rgba(0, 0, 0, 0.02); background-clip: padding-box;
+  }
 }

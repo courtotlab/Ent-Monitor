@@ -15,7 +15,6 @@ from langgraph.types import Command
 
 from layers.analysis.core.routing import (
   route_after_assess,
-  route_after_classify,
   route_after_decide,
   route_after_verify,
 )
@@ -29,6 +28,7 @@ from layers.analysis.nodes.assess import assess_node
 from layers.analysis.nodes.classify import classify_node
 from layers.analysis.nodes.decide import decide_node
 from layers.analysis.nodes.observe import observe_node
+from layers.analysis.nodes.probe import probe_known
 from layers.analysis.nodes.report import report_node
 from layers.analysis.nodes.research import research_node
 from layers.analysis.nodes.verify import verify_node
@@ -47,8 +47,13 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
 
   1. Calls OBSERVE once on all posts to produce a queue of clusters.
   2. The graph uses a pop_cluster loop to process clusters sequentially
-     (RESEARCH → ASSESS → CLASSIFY → VERIFY → REPORT → DECIDE).
-  3. Known trends take a fast-path merge (skip LLM pipeline).
+     (RESEARCH → ASSESS → CLASSIFY → VERIFY → DECIDE → [REPORT]).
+     REPORT runs after DECIDE so the verdict is persisted first; low-risk,
+     non-flagged clusters skip it entirely (see route_after_decide).
+  3. Known trends take a gated fast path: triage contradiction, resurfacing
+     (>14d activity gap), or stale verdict (>30d since last classification)
+     forces the full pipeline; otherwise an evidence-delta PROBE (new PubMed
+     publications since last_verified_at) gates the LLM-free merge.
   """
   if not run_id:
     run_id = f"run_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
@@ -70,7 +75,6 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "posts": posts,
     "trend_name": "",
     "search_context": "",
-    "is_known_trend": False,
     "matched_trend_id": None,
     "triage_flag": "unclear",
     # Known-trend context (populated by OBSERVE for matched clusters)
@@ -79,6 +83,7 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "db_trend_post_count": None,
     "db_trend_lifecycle": None,
     "db_trend_last_seen": None,
+    "db_trend_last_verified": None,
     # Research accumulators
     "search_queries": [],
     "evidence": [],
@@ -87,15 +92,12 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "tool_errors": [],
     "harm_hypothesis": "",
     "label": None,
-    "confidence": 0.0,
     "citations": [],
     "supporting_evidence_ids": [],
     "risk_score": 0.0,
     "reasoning": "",
-    "needs_more_evidence": False,
-    "no_evidence_found": False,
+    "out_of_scope": False,
     "verify_finding": None,
-    "report": None,
     "tool_degraded": False,
     "low_confidence": False,
     "research_retries_left": 3,
@@ -183,9 +185,8 @@ def pop_cluster_node(state: AgentState) -> dict:
     "posts": cluster.get("posts", []),
     "trend_name": cluster.get("cluster_name", ""),
     "search_context": cluster.get("search_context", ""),
-    "is_known_trend": cluster.get("is_known_trend", False),
-    "matched_trend_id": cluster.get("matched_trend_id"),
     "centroid": cluster.get("centroid", []),
+    "matched_trend_id": cluster.get("matched_trend_id"),
     "triage_flag": cluster.get("triage_flag", "unclear"),
     
     # Known-trend context from DB match
@@ -194,6 +195,7 @@ def pop_cluster_node(state: AgentState) -> dict:
     "db_trend_post_count": cluster.get("db_trend_post_count"),
     "db_trend_lifecycle": cluster.get("db_trend_lifecycle"),
     "db_trend_last_seen": cluster.get("db_trend_last_seen"),
+    "db_trend_last_verified": cluster.get("db_trend_last_verified"),
     
     # Reset accumulators for the new cluster
     "search_queries": [],
@@ -203,19 +205,16 @@ def pop_cluster_node(state: AgentState) -> dict:
     "tool_errors": [],
     "harm_hypothesis": "",
     "label": None,
-    "confidence": 0.0,
     "citations": [],
     "supporting_evidence_ids": [],
     "risk_score": 0.0,
     "reasoning": "",
-    "needs_more_evidence": False,
-    "no_evidence_found": False,
     "mechanism_level_match": False,
+    "out_of_scope": False,
     "slang_terms": [],
     "lifecycle": None,
     "verification": None,
     "verify_finding": None,
-    "report": None,
     "tool_degraded": False,
     "low_confidence": False,
     "research_retries_left": 3,
@@ -223,29 +222,65 @@ def pop_cluster_node(state: AgentState) -> dict:
     "should_monitor": False,
   }
 
+#  Verdict-freshness gates for the known-trend fast path.
+#  A stored verdict is only trusted for a silent merge while ALL of these hold:
+#  triage agrees with the DB label, the trend isn't resurging, the classification
+#  is recent, and no new literature has appeared since it was verified.
+RESURFACE_GAP_DAYS = 14  # same gap _check_resurfacing (queries.py) uses to flip lifecycle to Resurfacing
+VERDICT_TTL_DAYS = 30    # full-pipeline classifications older than this are re-run before merging
+
+
+def _days_since(ts: str | datetime | None) -> float | None:
+  """Age of a timestamp in days; tolerates ISO strings and naive datetimes."""
+  if ts is None:
+    return None
+  if isinstance(ts, str):
+    try:
+      ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+      return None
+  if ts.tzinfo is None:
+    ts = ts.replace(tzinfo=UTC)
+  return (datetime.now(UTC) - ts).total_seconds() / 86400.0
+
+
 def route_after_pop(state: AgentState) -> Command:
-  """If there's an active cluster, decide: fast-path merge or full pipeline."""
+  """If there's an active cluster, decide: probe-gated merge or full pipeline.
+
+  Known trends merge only when their stored verdict is trustworthy:
+    - triage must not contradict the DB label
+    - the trend must not be resurging (> RESURFACE_GAP_DAYS activity gap)
+    - the verdict must be fresh (< VERDICT_TTL_DAYS since last full classification)
+  Survivors pass through the evidence-delta PROBE before MERGE.
+  """
   if state.get("cluster_id") == "DONE":
     return Command(goto=END)
-  
-  is_known = state.get("is_known_trend", False)
+
   matched_id = state.get("matched_trend_id")
   triage_flag = state.get("triage_flag", "unclear")
   db_label = state.get("db_trend_label")
 
-  # Fast-path merge IF known trend AND triage doesn't contradict DB label
-  # Override: if triage says likely_harmful but DB says Low, force full pipeline
-  if is_known and matched_id:
+  if matched_id is not None:
     contradicts = (
       triage_flag == "likely_harmful" and (db_label and db_label.upper() == "LOW")
     )
-    if not contradicts:
-      return Command(goto="merge_known")
-    else:
+    seen_days = _days_since(state.get("db_trend_last_seen"))
+    resurging = (
+      seen_days is not None
+      and seen_days > RESURFACE_GAP_DAYS
+      and state.get("db_trend_lifecycle") != "Emergence"
+    )
+    verified_days = _days_since(state.get("db_trend_last_verified"))
+    stale = verified_days is None or verified_days > VERDICT_TTL_DAYS
+
+    if contradicts or resurging or stale:
       logger.info(
-        "ROUTE: known trend %s but triage=%s contradicts DB label=%s - forcing full pipeline",
-        matched_id, triage_flag, db_label,
+        "ROUTE: forcing full pipeline for known trend %s (contradicts=%s resurging=%s stale=%s)",
+        matched_id, contradicts, resurging, stale,
       )
+      return Command(goto="research")
+
+    return Command(goto="probe_known")
 
   return Command(goto="research")
 
@@ -257,6 +292,7 @@ def build_graph() -> StateGraph:
   graph.add_node("observe", observe_node)
   graph.add_node("pop_cluster", pop_cluster_node)
   graph.add_node("merge_known", merge_known_node)  # fast-path for known trends
+  graph.add_node("probe_known", probe_known)  # evidence-delta gate before merging into a known trend
   graph.add_node("research", research_node)
   graph.add_node("assess", assess_node)  # deterministic formula - no LLM
   graph.add_node("classify", classify_node)  # single-shot Terra high-effort
@@ -267,7 +303,6 @@ def build_graph() -> StateGraph:
   #  Router nodes (Command-based routing)
   graph.add_node("pop_router", route_after_pop)
   graph.add_node("assess_router", route_after_assess)
-  graph.add_node("classify_router", route_after_classify)
   graph.add_node("verify_router", route_after_verify)
   graph.add_node("decide_router", route_after_decide)
 
@@ -275,14 +310,14 @@ def build_graph() -> StateGraph:
   graph.set_entry_point("observe")
   graph.add_edge("observe", "pop_cluster")
   graph.add_edge("pop_cluster", "pop_router")
-  
+
   # Fast-path: merge_known → back to pop_cluster
   graph.add_edge("merge_known", "pop_cluster")
 
   # Full agentic loop
   graph.add_edge("research", "assess")
   graph.add_edge("assess", "assess_router")
-  graph.add_edge("classify", "classify_router")
+  graph.add_edge("classify", "verify")
   graph.add_edge("verify", "verify_router")
   graph.add_edge("decide", "decide_router")
   graph.add_edge("report", "pop_cluster")

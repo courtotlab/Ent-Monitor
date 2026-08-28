@@ -119,7 +119,10 @@ def get_trend_details(trend_id: str):
                lifecycle_status,
                first_detected_at, last_seen_at,
                trend_name, abstract, verification_status,
-               discovery_source, velocity_growth_rate, COALESCE(evidence, '[]'::jsonb) AS evidence
+               discovery_source, velocity_growth_rate, should_monitor,
+               COALESCE(evidence, '[]'::jsonb) AS evidence,
+               harm_mechanism,
+               COALESCE(lifecycle_history, '[]'::jsonb) AS lifecycle_history
         FROM trends
         WHERE trend_id = %s
         """,

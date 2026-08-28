@@ -88,5 +88,3 @@ class DuckDuckGoCircuitBreaker:
           "skipping DDG for remainder of run",
           self._failures,
         )
-      elif self._failures > self._threshold:
-        self._open = True

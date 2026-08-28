@@ -25,7 +25,7 @@ You are generating a short structured summary for a pediatric ENT health trend \
 that has been analyzed and classified.  This is for human review.
 
 Cluster: {cluster_id}
-Label: {label} (confidence: {confidence:.2f})
+Label: {label}
 Risk score: {risk_score:.3f}
 Evidence status: {evidence_status}
 
@@ -52,20 +52,17 @@ def report_node(state: AgentState) -> dict:
   Only called for clusters that crossed the dashboard threshold in decide_router.
   """
   cluster_id = state.get("cluster_id", "unknown")
-  label = state.get("label", "CONCERNING")
-  confidence = state.get("confidence", 0.5)
+  label = state.get("label", "MODERATE")
   risk_score = state.get("risk_score", 0.0)
   evidence = state.get("evidence", [])
 
   #  Determine evidence status
-  if state.get("no_evidence_found"):
+  if not evidence:
     evidence_status = "no_literature_found"
   elif any(e.get("source") == "pubmed" and e.get("is_relevant") for e in evidence):
     evidence_status = "pubmed_confirmed"
-  elif evidence:
-    evidence_status = "web_only"
   else:
-    evidence_status = "no_literature_found"
+    evidence_status = "web_only"
 
   citations_used = state.get("supporting_evidence_ids", [])
   supporting_evidence = [
@@ -73,7 +70,7 @@ def report_node(state: AgentState) -> dict:
     if (e.get("title") in citations_used or e.get("pmid") in citations_used)
     and not e.get("contradicts_harm")
   ]
-  # fallback if LLM failed to populate citations_used_as_support but we have relevant evidence
+  # fallback if LLM failed to populate supporting_evidence_ids but we have relevant evidence
   if not supporting_evidence and evidence:
     supporting_evidence = [e for e in evidence if e.get("is_relevant") and not e.get("contradicts_harm")]
 
@@ -90,7 +87,6 @@ def report_node(state: AgentState) -> dict:
   prompt = _PROMPT.format(
     cluster_id=cluster_id,
     label=label,
-    confidence=confidence,
     risk_score=risk_score,
     evidence_status=evidence_status,
     evidence_summary=evidence_summary,
@@ -106,7 +102,7 @@ def report_node(state: AgentState) -> dict:
     logger.warning("REPORT LLM failed: %s generating minimal report", exc)
     report = {
       "trend_name": state.get("trend_name", "Unknown trend"),
-      "summary": f"Classification: {label} with confidence {confidence:.2f}",
+      "summary": f"Classification: {label}",
       "harm_mechanism": "Unable to generate LLM error",
       "key_evidence": [],
     }
@@ -139,4 +135,4 @@ def report_node(state: AgentState) -> dict:
   current_results = list(state.get("cluster_results", []))
   current_results.append(eff_state)
 
-  return {"report": report, "cluster_results": current_results}
+  return {"cluster_results": current_results}

@@ -1,11 +1,7 @@
 """Routing logic for the Layer 3 Analysis graph.
 
 Contains:
-- EVIDENCE_THRESHOLD constant
-- compute_evidence_score()   - deterministic formula (ASSESS)
-- build_evidence_gap()       - picks next query + tool when score is low
 - route_after_assess()       - ASSESS → CLASSIFY or RESEARCH
-- route_after_classify()     - CLASSIFY → VERIFY or RESEARCH
 - route_after_verify()       - VERIFY → DECIDE, RESEARCH, or CLASSIFY
 - route_after_decide()       - DECIDE → REPORT or pop_cluster
 """
@@ -16,42 +12,26 @@ from langgraph.types import Command
 
 from layers.analysis.core.state import AgentState, EvidenceGap
 
-from layers.analysis.nodes.assess import EVIDENCE_THRESHOLD, build_evidence_gap, compute_evidence_score
+from layers.analysis.nodes.assess import EVIDENCE_THRESHOLD, build_evidence_gap
 
 
 #  Route: after ASSESS
 def route_after_assess(state: AgentState) -> Command:
   """ASSESS routes to CLASSIFY (sufficient) or RESEARCH (gap)."""
-  score = compute_evidence_score(state)
+  score = state.get("evidence_score", 0.0)  # computed by assess_node
   retries_left = state["research_retries_left"]
 
   if score >= EVIDENCE_THRESHOLD or retries_left <= 0:
-    no_evidence = score == 0.0 and retries_left <= 0
-    return Command(
-      goto="classify",
-      update={
-        "evidence_score": score,
-        "no_evidence_found": no_evidence,
-      },
-    )
+    return Command(goto="classify")
 
   gap = build_evidence_gap(state, score)
   return Command(
     goto="research",
     update={
-      "evidence_score": score,
       "evidence_gap": gap,
       "research_retries_left": retries_left - 1,
     },
   )
-
-
-#  Route: after CLASSIFY
-def route_after_classify(state: AgentState) -> Command:
-  """CLASSIFY routes to VERIFY or back to RESEARCH."""
-  if state.get("needs_more_evidence") and state["research_retries_left"] > 0:
-    return Command(goto="research", update={"research_retries_left": state["research_retries_left"] - 1, "needs_more_evidence": False})
-  return Command(goto="verify")
 
 
 #  Route: after VERIFY
@@ -79,15 +59,21 @@ def route_after_verify(state: AgentState) -> Command:
           "verify_retries_left": state.get("verify_retries_left", 1) - 1,
         },
       )
-    return Command(goto="decide")
+    # Retries exhausted and citation is still invalid/irrelevant - do NOT
+    # silently confirm. Flag low_confidence so DECIDE/REPORT surface this
+    # distinctly instead of writing it as a clean CONFIRMED trend.
+    return Command(goto="decide", update={"low_confidence": True})
 
-  if not finding.get("label_consistent") and retries_left:
-    return Command(
-      goto="classify",
-      update={
-        "verify_retries_left": state.get("verify_retries_left", 1) - 1,
-      },
-    )
+  if not finding.get("label_consistent"):
+    if retries_left:
+      return Command(
+        goto="classify",
+        update={
+          "verify_retries_left": state.get("verify_retries_left", 1) - 1,
+        },
+      )
+    # Same failure mode: exhausted retries with an unresolved inconsistency.
+    return Command(goto="decide", update={"low_confidence": True})
 
   return Command(goto="decide")
 

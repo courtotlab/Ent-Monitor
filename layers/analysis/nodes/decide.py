@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from layers.analysis.core.state import AgentState
-from layers.analysis.db.queries import write_cluster_to_db, write_safe_posts_to_db
+from layers.analysis.db.queries import write_cluster_to_db, write_safe_posts_to_db, get_recent_post_count
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +65,19 @@ def decide_node(state: AgentState) -> dict:
 
   # Calculate true post count including historical DB state
   post_count = len(state.get("posts", []))
-  if state.get("is_known_trend"):
+  if state.get("matched_trend_id") is not None:
     post_count += state.get("db_trend_post_count", 0)
+    
+  recent_post_count = len(state.get("posts", []))
+  if state.get("matched_trend_id") is not None:
+    recent_post_count += get_recent_post_count(state.get("matched_trend_id"), days=7)
     
   lifecycle = state.get("lifecycle", "Isolated incident")
 
   # Smart Velocity Monitor Scheduling Rule
   should_monitor = (
     label == "HIGH" or
-    (label == "MODERATE" and (lifecycle in ("Emergence", "Growth", "Resurfacing") or post_count > 15)) or
+    (label == "MODERATE" and (lifecycle in ("Emergence", "Growth", "Resurfacing") or recent_post_count >= 7)) or
     (label == "LOW" and lifecycle in ("Emergence", "Growth") and post_count > 50)
   )
 

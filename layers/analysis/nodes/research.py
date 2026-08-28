@@ -1,7 +1,8 @@
 """RESEARCH node - evidence gathering via fixed tool cascade.
 
-: Fixed order regardless of LLM: PubMed first → Semantic Scholar if needed →
-CrossRef for DOI enrichment → DuckDuckGo only if zero clinical sources.
+Fixed order regardless of LLM: PubMed first → DuckDuckGo (always - emerging
+trends may not be indexed clinically yet) → Semantic Scholar if clinical
+sources are thin → CrossRef for DOI enrichment.
 
 The LLM still generates the harm_hypothesis (clinical translation) but no longer
 chooses which tools to run. Source tier tagging is applied after gathering.
@@ -119,7 +120,7 @@ def research_node(state: AgentState) -> dict:
     try:
 
       known_trend_context = ""
-      if state.get("is_known_trend") and state.get("matched_trend_id"):
+      if state.get("matched_trend_id") is not None:
         db_posts = state.get("db_trend_post_count", 0)
         db_label = state.get("db_trend_label", "unknown")
         known_trend_context = f"Known trend: {state['matched_trend_id']} ({db_posts} existing posts, label: {db_label})"
@@ -281,7 +282,7 @@ def _tag_relevance(
   try:
 
     evidence_summary = "\n".join(
-      f"[{i}] {item['title']}\n    Source: {item['source']} (tier: {item.get('source_tier', 'unknown')})\n    {item['snippet'][:800]}"
+      f"[{i}] {item['title']}\n    Source: {item['source']} (tier: {item.get('source_tier', 'unknown')})\n    {item['snippet'][:2000]}"
       for i, item in enumerate(items)
     )
 
@@ -291,10 +292,19 @@ def _tag_relevance(
 
 CRITICAL: An evidence item is ONLY relevant if it directly addresses the harm \
 hypothesis above (or the core trend behavior) - not just a shared keyword or topic area.
+- Evidence MUST provide concrete proof directly addressing the specific behavior or at-home remedy in question.
+- Vague topical overlaps are NOT acceptable. For example, if a trend is about nasal suction devices or home remedies for baby congestion, papers about adenoid hypertrophy surgery or chronic mouth breathing are NOT relevant.
 - Authoritative warnings (e.g., FDA, CDC, certified hospitals) in news articles that explicitly address the trend ARE highly relevant.
+- BE EXTREMELY STRICT. It is better to return ZERO relevant evidence than to return loosely related background science. We do NOT need to fill a quota of evidence.
 - A paper about laryngeal foreign body aspiration is NOT relevant to a cluster \
 about flu season / sore throat / allergy management.
 - A paper about newborn hearing screening is NOT relevant to school-age hearing screening.
+"""
+    else:
+      hypothesis_block = """\
+CRITICAL: The harm hypothesis is 'none' (this behavior is benign). 
+An evidence item is ONLY relevant if it specifically addresses this EXACT behavior and confirms it is benign.
+Any evidence discussing harm, misinformation, or other risks is NOT relevant to this specific benign cluster.
 """
 
     prompt_text = f"""\
