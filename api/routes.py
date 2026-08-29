@@ -69,7 +69,8 @@ def get_dashboard_recent_trends():
                lifecycle_status,
                first_detected_at, last_seen_at,
                trend_name, abstract, verification_status, discovery_source,
-               velocity_growth_rate
+               velocity_growth_rate,
+               COALESCE(slang_terms, '[]'::jsonb) AS slang_terms
         FROM trends
         ORDER BY GREATEST(first_detected_at, COALESCE(last_seen_at, first_detected_at)) DESC
         LIMIT 10
@@ -94,7 +95,8 @@ def get_trends():
                lifecycle_status,
                first_detected_at, last_seen_at,
                trend_name, abstract, verification_status,
-               discovery_source, velocity_growth_rate
+               discovery_source, velocity_growth_rate,
+               COALESCE(slang_terms, '[]'::jsonb) AS slang_terms
         FROM trends
         ORDER BY last_seen_at DESC NULLS LAST, first_detected_at DESC
         """
@@ -122,7 +124,8 @@ def get_trend_details(trend_id: str):
                discovery_source, velocity_growth_rate, should_monitor,
                COALESCE(evidence, '[]'::jsonb) AS evidence,
                harm_mechanism,
-               COALESCE(lifecycle_history, '[]'::jsonb) AS lifecycle_history
+               COALESCE(lifecycle_history, '[]'::jsonb) AS lifecycle_history,
+               COALESCE(slang_terms, '[]'::jsonb) AS slang_terms
         FROM trends
         WHERE trend_id = %s
         """,
@@ -135,7 +138,7 @@ def get_trend_details(trend_id: str):
       # 2. Fetch posts
       cur.execute(
         """
-        SELECT post_id, platform, creator_id, caption_text, COALESCE(metadata, '{}'::jsonb) AS metadata, likes, comments, shares, views,
+        SELECT post_id, platform, creator_id, caption_text, url, likes, comments, shares, views,
                collected_at, posted_at, sbert_score
         FROM posts
         WHERE linked_trend_id = %s

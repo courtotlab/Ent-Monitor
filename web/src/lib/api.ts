@@ -1,3 +1,6 @@
+import type { RiskLevel } from "./utils"
+import type { LifecycleStatus, VerificationStatus } from "./constants"
+
 const API_BASE = "/api/v1"
 
 // Response types
@@ -18,22 +21,22 @@ export interface ChartDataPoint {
 
 export interface TrendData {
   trend_id: string
-  label: "HIGH" | "MODERATE" | "LOW"
+  label: RiskLevel
   risk_score: number
   post_count: number
   platforms: string[]
-  lifecycle_status: string
+  lifecycle_status: LifecycleStatus
   first_detected_at: string | null
   last_seen_at: string | null
   trend_name: string | null
   abstract: string | null
-  verification_status: string
+  verification_status: VerificationStatus
   discovery_source: string | null
   velocity_growth_rate?: number | null
   should_monitor?: boolean
   evidence?: { url: string; title: string; source: string; pmid: string | null }[]
   harm_mechanism?: string | null
-  lifecycle_history?: { date: string; status: string; post_count: number }[]
+  lifecycle_history?: { date: string; status: LifecycleStatus; post_count: number }[]
   slang_terms?: string[] | null
 }
 
@@ -42,7 +45,7 @@ export interface PostData {
   platform: string
   creator_id: string | null
   caption_text: string | null
-  metadata: { url?: string; [key: string]: unknown }
+  url: string | null
   likes: number
   comments: number
   shares: number

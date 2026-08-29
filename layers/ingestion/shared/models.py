@@ -14,11 +14,10 @@ class RawPostDict(TypedDict, total=False):
   creator_id: str | None
   caption_text: str | None
   transcript_text: str | None
-  hashtags: list[str] | None
+  url: str | None
   posted_at: str | None
   collected_at: str | None
   engagement: EngagementDict
-  metadata: dict[str, object]
 
 
 @dataclass
@@ -29,11 +28,10 @@ class NormalizedPost:
   creator_id: str
   caption_text: str
   transcript_text: str | None = None
-  hashtags: list[str] | None = None
+  url: str | None = None
   posted_at: str | None = None
   collected_at: str | None = None
   engagement: dict[str, object] = field(default_factory=dict)
-  metadata: dict[str, object] = field(default_factory=dict)
 
   def to_dict(self) -> RawPostDict:
     return asdict(self)

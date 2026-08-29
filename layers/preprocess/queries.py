@@ -64,7 +64,7 @@ def fetch_unprocessed_posts(limit: int = 100000) -> list[RawPostDict]:
     cur.execute(
       """
       SELECT post_id, platform, source, creator_id, caption_text, transcript_text,
-             hashtags, metadata, likes, comments, shares, views,
+             url, likes, comments, shares, views,
              collected_at, posted_at
       FROM posts
       WHERE sbert_score IS NULL

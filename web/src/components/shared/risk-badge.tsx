@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge"
 import { AlertTriangleIcon, AlertCircleIcon, ShieldCheckIcon } from "lucide-react"
 import { type RiskLevel } from "@/lib/utils"
 
-export function RiskBadge({ label, score }: { label?: string | RiskLevel; score: number }) {
+export function RiskBadge({ label, score }: { label?: RiskLevel; score: number }) {
   const pct = Math.round(score * 100)
   if (label === "HIGH" || score >= 0.7) {
     return (

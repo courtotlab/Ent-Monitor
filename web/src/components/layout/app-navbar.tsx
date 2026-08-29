@@ -4,34 +4,31 @@ import * as React from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useTheme } from "next-themes"
-import { HomeIcon, TrendingUpIcon, FileTextIcon, MessageSquareIcon, CommandIcon, SearchIcon, SunIcon, MoonIcon, MenuIcon, XIcon } from "lucide-react"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
+import { HomeIcon, TrendingUpIcon, FileTextIcon, CommandIcon, SunIcon, MoonIcon, MenuIcon, XIcon } from "lucide-react"
 
 const navItems = [
   { title: "Home", url: "/", icon: HomeIcon },
   { title: "Dashboard", url: "/dashboard", icon: FileTextIcon },
-  { title: "Trend", url: "/trends", icon: TrendingUpIcon },
-  // { title: "Feedback", url: "/feedback", icon: MessageSquareIcon },
+  { title: "Trends", url: "/trends", icon: TrendingUpIcon },
 ]
 
 interface AppNavbarProps {
-  activePage?: string
+  activePage?: "Dashboard" | "Trends"
 }
 
 export function AppNavbar({ activePage }: AppNavbarProps) {
   const pathname = usePathname()
-  const { theme, setTheme, resolvedTheme } = useTheme()
-  const [mounted, setMounted] = React.useState(false)
+  const { setTheme, resolvedTheme } = useTheme()
+  const mounted = React.useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  )
   const [isMenuOpen, setIsMenuOpen] = React.useState(false)
 
-  React.useEffect(() => {
-    setMounted(true)
-  }, [])
-
-  function isActive(item: (typeof navItems)[number]) {
-    if (activePage) return activePage === item.title
-    return pathname === item.url || (item.url !== "/" && pathname.startsWith(item.url))
+  function isActive(title: string, url: string) {
+    if (activePage) return activePage === title
+    return pathname === url || (url !== "/" && pathname.startsWith(url))
   }
 
   return (
@@ -56,7 +53,7 @@ export function AppNavbar({ activePage }: AppNavbarProps) {
               href={url}
               className={[
                 "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                isActive({ title, url, icon: Icon })
+                isActive(title, url)
                   ? "bg-accent text-accent-foreground"
                   : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
               ].join(" ")}
@@ -111,7 +108,7 @@ export function AppNavbar({ activePage }: AppNavbarProps) {
                 onClick={() => setIsMenuOpen(false)}
                 className={[
                   "flex items-center gap-3 rounded-md px-4 py-2 text-sm font-medium transition-colors w-full",
-                  isActive({ title, url, icon: Icon })
+                  isActive(title, url)
                     ? "bg-accent text-accent-foreground"
                     : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                 ].join(" ")}

@@ -13,6 +13,24 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    rules: {
+      // Known incompatibility with TanStack Table.
+      "react-hooks/incompatible-library": "off",
+      // Allow intentional synchronous setState calls (e.g., reset loading state).
+      "react-hooks/set-state-in-effect": "off",
+      // Keep as warning globally.
+      "react-hooks/exhaustive-deps": "warn",
+    },
+  },
+  {
+    // Spread deps [...deps, tick] in use-api are intentional and correct by design.
+    files: ["src/hooks/use-api.ts"],
+    rules: {
+      "react-hooks/exhaustive-deps": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;
+

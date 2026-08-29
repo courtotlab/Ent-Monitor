@@ -21,8 +21,7 @@ CREATE TABLE posts (
     creator_id          TEXT,                    -- FK to creators
     caption_text        TEXT,                    -- Original text caption of the post
     transcript_text     TEXT,                    -- Audio transcript
-    hashtags            JSONB,
-    metadata            JSONB NOT NULL DEFAULT '{}', -- Source-specific URLs and discovery provenance
+    url                 TEXT,                    -- Direct link to the source post (TikTok/IG/YouTube video, Reddit thread)
     likes               INTEGER DEFAULT 0,
     comments            INTEGER DEFAULT 0,
     shares              INTEGER DEFAULT 0,

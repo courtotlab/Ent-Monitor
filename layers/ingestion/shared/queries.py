@@ -27,9 +27,7 @@ def insert_post(
 ) -> bool:
   """Insert post with ON CONFLICT DO NOTHING. Returns True if inserted."""
   engagement = post.get("engagement") or {}
-  hashtags = post.get("hashtags")
-  hashtags_value = Json(hashtags) if hashtags is not None else None
-  metadata_value = Json(post.get("metadata") or {})
+  url = post.get("url") or ""
 
   transcript = post.get("transcript_text")
   if isinstance(transcript, (list, dict)):
@@ -52,12 +50,12 @@ def insert_post(
       """
    INSERT INTO posts (
     post_id, platform, source,
-    creator_id, caption_text, transcript_text, hashtags, metadata,
+    creator_id, caption_text, transcript_text, url,
     likes, comments, shares, views,
     collected_at, posted_at, sbert_score, matched_anchor_id
    ) VALUES (
     %s, %s, %s,
-    (SELECT creator_id FROM creators WHERE creator_id = %s AND platform = %s), %s, %s, %s, %s,
+    (SELECT creator_id FROM creators WHERE creator_id = %s AND platform = %s), %s, %s, %s,
     %s, %s, %s, %s,
     %s, %s, %s, %s
    )
@@ -66,8 +64,7 @@ def insert_post(
     creator_id = COALESCE(EXCLUDED.creator_id, posts.creator_id),
     caption_text = COALESCE(EXCLUDED.caption_text, posts.caption_text),
     transcript_text = COALESCE(EXCLUDED.transcript_text, posts.transcript_text),
-    hashtags = COALESCE(EXCLUDED.hashtags, posts.hashtags),
-    metadata = COALESCE(posts.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb),
+    url = COALESCE(EXCLUDED.url, posts.url),
     likes = GREATEST(COALESCE(EXCLUDED.likes, 0), COALESCE(posts.likes, 0)),
     comments = GREATEST(COALESCE(EXCLUDED.comments, 0), COALESCE(posts.comments, 0)),
     shares = GREATEST(COALESCE(EXCLUDED.shares, 0), COALESCE(posts.shares, 0)),
@@ -78,7 +75,7 @@ def insert_post(
      WHEN EXCLUDED.sbert_score IS NOT NULL AND (posts.sbert_score IS NULL OR EXCLUDED.sbert_score > posts.sbert_score) THEN EXCLUDED.matched_anchor_id
      ELSE posts.matched_anchor_id
     END,
-    sbert_score = CASE 
+    sbert_score = CASE
      WHEN EXCLUDED.sbert_score IS NOT NULL AND (posts.sbert_score IS NULL OR EXCLUDED.sbert_score > posts.sbert_score) THEN EXCLUDED.sbert_score
      ELSE posts.sbert_score
     END
@@ -92,8 +89,7 @@ def insert_post(
         post["platform"],
         post.get("caption_text"),
         transcript,
-        hashtags_value,
-        metadata_value,
+        url,
         int(engagement.get("likes") or 0),
         int(engagement.get("comments") or 0),
         int(engagement.get("shares") or 0),

@@ -7,9 +7,26 @@ export function cn(...inputs: ClassValue[]) {
 
 export type RiskLevel = "HIGH" | "MODERATE" | "LOW"
 
-export function formatDate(iso: string | null) {
-  if (!iso) return "-"
-  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+export function parseUtcDate(iso: string | null | undefined): Date | null {
+  if (!iso) return null
+  const safe = iso.endsWith("Z") || iso.includes("+") ? iso : `${iso}Z`
+  return new Date(safe)
+}
+
+export function pluralize(n: number, singular: string, plural = `${singular}s`): string {
+  return `${n} ${n === 1 ? singular : plural}`
+}
+
+export function formatDate(iso: string | null | undefined) {
+  const d = parseUtcDate(iso)
+  if (!d) return "-"
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+}
+
+export function formatShortDate(iso: string | null | undefined, opts: { withYear?: boolean } = {}): string {
+  const d = parseUtcDate(iso)
+  if (!d) return "-"
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: opts.withYear ? "numeric" : undefined, timeZone: "UTC" })
 }
 
 export function formatTrendName(trendId: string) {
