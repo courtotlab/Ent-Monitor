@@ -21,6 +21,8 @@ const eslintConfig = defineConfig([
       "react-hooks/set-state-in-effect": "off",
       // Keep as warning globally.
       "react-hooks/exhaustive-deps": "warn",
+      // Allow var for global typescript declarations
+      "no-var": "off",
     },
   },
   {

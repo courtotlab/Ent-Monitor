@@ -3,8 +3,8 @@ runtime: nodejs22
 instance_class: F1
 
 env_variables:
-  # The API URL must be updated to the FastAPI App Engine URL once deployed
-  NEXT_PUBLIC_API_URL: "https://courtot-gsoc2026.nn.r.appspot.com/api/v1"
+  # Replace <VM_IP> with your backend VM's external IP address before deploying
+  DATABASE_URL: "postgresql://ent_admin:localdevpassword@<VM_IP>:5432/ent_surveillance"
 
 handlers:
   - url: /.*

@@ -1,7 +1,7 @@
 import type { RiskLevel } from "./utils"
 import type { LifecycleStatus, VerificationStatus } from "./constants"
 
-const API_BASE = "/api/v1"
+const API_BASE = "/api"
 
 // Response types
 
