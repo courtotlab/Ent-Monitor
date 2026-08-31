@@ -1,0 +1,11 @@
+runtime: python311
+instance_class: F1
+
+entrypoint: gunicorn -k uvicorn.workers.UvicornWorker api.server:app
+
+env_variables:
+  DATABASE_URL: "postgresql://ent_admin:localdevpassword@<VM_INTERNAL_IP>:5432/ent_surveillance"
+
+handlers:
+- url: /.*
+  script: auto

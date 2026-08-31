@@ -30,7 +30,11 @@ logger = logging.getLogger(__name__)
 # Tunables 
 SBERT_MODEL_NAME = "all-MiniLM-L6-v2" 
 SIMILARITY_THRESHOLD = 0.75
-MAX_AGE_DAYS = 14 
+MAX_AGE_DAYS = 14
+
+# Velocity monitor runs exactly TWICE per trend after an agentic run:
+#   Check 1: at the ~5th hour  → see if it's spreading fast
+#   Check 2: at the ~10th hour → final check; then should_monitor is set to FALSE
 
 
 # Apify config - set in .env
@@ -152,10 +156,10 @@ async def run_velocity_monitor() -> int:
     else:
       logger.info("Trend %s: 0 matching posts this check.", trend_id)
 
-    # Hard stop after exactly 3 fetches
-    should_deactivate = (check_count >= 2)
+    # Hard stop after exactly 2 fetches (5th and 10th hour check)
+    should_deactivate = (check_count >= 1)
     if should_deactivate:
-      logger.info("Trend %s reached maximum 3 checks - deactivating.", trend_id)
+      logger.info("Trend %s reached maximum 2 checks - deactivating velocity monitor.", trend_id)
 
     update_trend_velocity_monitor(
       trend_id=trend_id,
