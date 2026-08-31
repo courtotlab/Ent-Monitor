@@ -14,9 +14,14 @@ if ! command -v uv &> /dev/null; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-# 2. Export dependencies for App Engine (requires requirements.txt)
-echo "Exporting uv dependencies to requirements.txt..."
-uv pip compile pyproject.toml -o requirements.txt
+# 2. Export only the required API dependencies for App Engine
+echo "Generating minimal requirements.txt for API..."
+cat << 'EOF' > requirements.txt
+fastapi
+uvicorn[standard]
+psycopg2-binary
+python-dotenv
+EOF
 
 # 3. Enable Required Google Cloud APIs
 echo "Ensuring required GCP APIs are enabled..."
