@@ -9,11 +9,10 @@ declare global {
 }
 
 function createPool(): Pool {
-  const connectionString = process.env.DATABASE_URL
-  if (!connectionString) {
-    throw new Error("DATABASE_URL environment variable is not set")
-  }
-  return new Pool({ connectionString })
+  // Use a dummy string during Next.js build step when env vars are unavailable
+  return new Pool({ 
+    connectionString: process.env.DATABASE_URL || "postgres://dummy:dummy@localhost/dummy" 
+  })
 }
 
 const pool: Pool = globalThis._pgPool ?? createPool()
