@@ -1,9 +1,4 @@
-"""REPORT node short structured summary + final JSON output.
-
-GPT-4.1-mini at low effort.  Only runs for clusters that cleared the
-decide_router threshold (HARMFUL / CONCERNING / risk >= 0.5 / no_evidence).
-Appends to cluster_results so the dashboard sees it.
-"""
+"""REPORT node short structured summary + final JSON output."""
 
 from __future__ import annotations
 
@@ -47,10 +42,7 @@ class ReportSummary(BaseModel):
   key_evidence: list[str] = Field(description="List of key evidence e.g., 'Paper 1 (PMID: ...)', 'Source 2'")
 
 def report_node(state: AgentState) -> dict:
-  """REPORT node generates summary and appends to cluster_results.
-
-  Only called for clusters that crossed the dashboard threshold in decide_router.
-  """
+  """REPORT node generates summary and appends to cluster_results."""
   cluster_id = state.get("cluster_id", "unknown")
   label = state.get("label", "MODERATE")
   risk_score = state.get("risk_score", 0.0)
@@ -70,7 +62,7 @@ def report_node(state: AgentState) -> dict:
     if (e.get("title") in citations_used or e.get("pmid") in citations_used)
     and not e.get("contradicts_harm")
   ]
-  # fallback if LLM failed to populate supporting_evidence_ids but we have relevant evidence
+  # fallback if LLM failed to populate supporting_evidence_ids
   if not supporting_evidence and evidence:
     supporting_evidence = [e for e in evidence if e.get("is_relevant") and not e.get("contradicts_harm")]
 
@@ -115,7 +107,7 @@ def report_node(state: AgentState) -> dict:
   eff_state["abstract"] = report.get("summary", "")
   eff_state["harm_mechanism"] = report.get("harm_mechanism", "")
 
-  # Persist to database (trends + posts tables)
+  # Persist to DB (trends + posts)
   try:
     write_cluster_to_db(eff_state, centroid=eff_state.get("centroid"))
     if state.get("should_monitor", False):

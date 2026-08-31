@@ -1,8 +1,4 @@
-"""DECIDE node - deterministic classification gate.
-
-No LLM. No human review. Every cluster resolves to a final label automatically.
-Sets tool_degraded flag and handles LOW post DB writes.
-"""
+"""DECIDE node - deterministic classification gate. Handles final labels and LOW DB writes."""
 
 from __future__ import annotations
 
@@ -15,11 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def decide_node(state: AgentState) -> dict:
-  """DECIDE node - sets final classification flags in state.
-
-  Every cluster auto-resolves. No deferred/pending states.
-  The decide_router determines whether to proceed to REPORT or skip to pop_cluster.
-  """
+  """DECIDE node - sets final classification flags in state."""
   cluster_id = state.get("cluster_id", "unknown")
   tool_errors = state.get("tool_errors", [])
   vf = state.get("verify_finding")

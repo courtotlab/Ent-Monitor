@@ -26,7 +26,10 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
       url = item.get("webVideoUrl") or item.get("videoUrl")
       if url and len(post_urls) < 5 * len(valid_handles):
         post_urls.append(url)
-      if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
+      
+      if "error" in item:
+        logger.warning(f"[TT] Apify returned error in creator item: {item.get('error')}")
+      elif item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
         posts.append(
           norm_tiktok(
             item, "creator_monitor", item.get("author", {}).get("uniqueId", "")
@@ -50,11 +53,14 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
       }
     )
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-      author_id = (item.get("author") or {}).get("uniqueId", "")
-      if author_id and author_id.lower() not in handle_set:
-        engagers.add(author_id)
-      if len(engagers) >= limit_engagers:
-        break
+      if "error" in item:
+        logger.warning(f"[TT] Apify returned error in engager comments item: {item.get('error')}")
+      else:
+        author_id = (item.get("author") or {}).get("uniqueId", "")
+        if author_id and author_id.lower() not in handle_set:
+          engagers.add(author_id)
+        if len(engagers) >= limit_engagers:
+          break
   except Exception as e:
     logger.error(f"[TT] Engager comments fetch error: {e}")
 
@@ -69,7 +75,9 @@ async def scrape_tiktok(client, handles: list[str], limit_posts: int, limit_enga
         }
       )
       async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-        if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
+        if "error" in item:
+          logger.warning(f"[TT] Apify returned error in engager item: {item.get('error')}")
+        elif item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
           posts.append(
             norm_tiktok(item, "engager", item.get("author", {}).get("uniqueId", ""))
           )
@@ -92,7 +100,9 @@ async def scrape_tiktok_explore(client, limit_posts: int) -> list[NormalizedPost
       }
     )
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-      if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
+      if "error" in item:
+        logger.warning(f"[TT] Apify returned error in explore item: {item.get('error')}")
+      elif item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
         posts.append(norm_tiktok(item, "explore_feed", "explore"))
   except Exception as e:
     logger.error(f"[TT] Explore scrape error: {e}")
@@ -116,7 +126,9 @@ async def scrape_tiktok_search(
       }
     )
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-      if item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
+      if "error" in item:
+        logger.warning(f"[TT] Apify returned error in search item: {item.get('error')}")
+      elif item.get("id") or item.get("webVideoUrl") or item.get("videoUrl"):
         posts.append(norm_tiktok(item, source, "search"))
   except Exception as e:
     logger.error(f"[TT] Search scrape error: {e}")

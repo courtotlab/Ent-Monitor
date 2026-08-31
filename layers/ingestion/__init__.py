@@ -30,3 +30,10 @@ if not _ingestion_logger.handlers:
   _ingestion_logger.addHandler(_file_handler)
   _ingestion_logger.addHandler(_stream_handler)
   _ingestion_logger.propagate = False
+
+  # Route Apify SDK logs into the same ingestion.log file
+  _apify_logger = logging.getLogger("apify_client")
+  _apify_logger.setLevel(logging.INFO)
+  _apify_logger.addHandler(_file_handler)
+  _apify_logger.addHandler(_stream_handler)
+  _apify_logger.propagate = False

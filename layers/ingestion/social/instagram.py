@@ -28,6 +28,8 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
         posts.append(
           norm_instagram(item, "creator_monitor", item.get("ownerUsername", ""))
         )
+      elif "error" in item:
+        logger.warning(f"[IG] Apify returned error in creator item: {item.get('error')}")
   except Exception as e:
     logger.error(f"[IG] Creator scrape error: {e}")
 
@@ -69,6 +71,8 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
       async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
         if "error" not in item and (item.get("id") or item.get("shortCode")):
           posts.append(norm_instagram(item, "engager", item.get("ownerUsername", "")))
+        elif "error" in item:
+          logger.warning(f"[IG] Apify returned error in engager item: {item.get('error')}")
     except Exception as e:
       logger.error(f"[IG] Engager posts fetch error: {e}")
 
@@ -92,6 +96,8 @@ async def scrape_instagram_explore(client, limit_posts: int) -> list[NormalizedP
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
       if "error" not in item and (item.get("id") or item.get("shortCode")):
         posts.append(norm_instagram(item, "explore_feed", "explore"))
+      elif "error" in item:
+        logger.warning(f"[IG] Apify returned error in explore item: {item.get('error')}")
   except Exception as e:
     logger.error(f"[IG] Explore scrape error: {e}")
 
@@ -115,6 +121,8 @@ async def scrape_instagram_search(client, keywords: list[str], limit_posts: int,
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
       if "error" not in item and (item.get("id") or item.get("shortCode")):
         posts.append(norm_instagram(item, source, "search"))
+      elif "error" in item:
+        logger.warning(f"[IG] Apify returned error in search item: {item.get('error')}")
   except Exception as e:
     logger.error(f"[IG] Search scrape error: {e}")
 

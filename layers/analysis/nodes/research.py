@@ -1,12 +1,4 @@
-"""RESEARCH node - evidence gathering via fixed tool cascade.
-
-Fixed order regardless of LLM: PubMed first → DuckDuckGo (always - emerging
-trends may not be indexed clinically yet) → Semantic Scholar if clinical
-sources are thin → CrossRef for DOI enrichment.
-
-The LLM still generates the harm_hypothesis (clinical translation) but no longer
-chooses which tools to run. Source tier tagging is applied after gathering.
-"""
+"""RESEARCH node - fixed tool cascade (PubMed → DDG → SemScholar → CrossRef) for evidence gathering."""
 
 from __future__ import annotations
 
@@ -89,14 +81,7 @@ def _tag_source_tier(item: EvidenceItem) -> EvidenceItem:
   return item
 
 def research_node(state: AgentState) -> dict:
-  """RESEARCH node - gathers evidence via fixed tool cascade.
-
-  tool order:
-  1. PubMed first (always)
-  2. Semantic Scholar if PubMed returns < 2 relevant clinical sources
-  3. CrossRef to validate/enrich DOIs (not a search step)
-  4. DuckDuckGo only if steps 1-3 return zero clinical sources
-  """
+  """RESEARCH node - gathers evidence via fixed tool cascade."""
   print(f"  [RESEARCH] Investigating: {state.get('search_context', 'trend')[:50]}...")
   evidence_gap = state.get("evidence_gap")
   search_context = state.get("search_context", "")
@@ -176,7 +161,7 @@ def research_node(state: AgentState) -> dict:
     pubmed_collected = _tag_relevance(pubmed_collected, search_context, harm_hypothesis)
   results.extend(pubmed_collected)
 
-  # Step 2: DuckDuckGo (Always run for new trends that might not be in PubMed yet)
+  # Step 2: DuckDuckGo (Always run for emerging trends)
   logger.info("RESEARCH: step 2 - duckduckgo_search (always run for emerging trends)")
   ddg_collected = []
   for q_data in queries_to_run:
@@ -241,7 +226,7 @@ def research_node(state: AgentState) -> dict:
   # Filter to relevant only
   results = [r for r in results if r.get("is_relevant")]
 
-  # Dedup by PMID or title (later items overwrite earlier ones so CrossRef enrichment wins)
+  # Dedup by PMID/title (CrossRef enrichment wins)
   seen = {}
   unique_evidence_no_key = []
   for item in existing_evidence + results:

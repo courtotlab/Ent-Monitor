@@ -114,7 +114,7 @@ export default function TrendDetailsPage() {
   const [timeRange, setTimeRange] = React.useState<TimeRange>("30d")
 
   const filteredChartData = React.useMemo(
-    () => filterByTimeRange(data?.chart_data ?? [], timeRange),
+    () => filterByTimeRange(data?.chart_data ?? [], timeRange, undefined, { count: 0 }),
     [data?.chart_data, timeRange],
   )
 

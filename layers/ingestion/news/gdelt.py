@@ -297,7 +297,7 @@ def write_to_db(confirmed_articles: list[dict]):
       dt = datetime.datetime.now(datetime.UTC)
 
     for term in search_terms:
-      insert_news_trend_signal(Json({"news_source_url": url, "news_source_name": source_name, "news_article_title": title, "news_article_date": dt.isoformat(), "news_sbert_score": score, "news_behavioral_extract": extract}), term)
+      insert_news_trend_signal(Json({"news_source_url": url, "news_source_name": source_name, "news_article_title": title, "news_article_date": dt.isoformat(), "news_sbert_score": score, "news_behavioral_extract": extract, "news_matched_term": term}))
     upsert_gdelt_seen_url(url)
 
 
@@ -310,7 +310,17 @@ async def main():
       return
 
     logger.info(f"[GDELT] Downloading and parsing new batch: {gkg_url}")
-    df = download_and_parse_gkg(gkg_url)
+    
+    # GDELT updates lastupdate.txt instantly, but CDN propagation for the actual .zip file takes 2-3 minutes.
+    # We catch the resulting 404 here and skip this run so the orchestrator can try again later.
+    try:
+      df = download_and_parse_gkg(gkg_url)
+    except requests.exceptions.HTTPError as e:
+      if e.response.status_code == 404:
+        logger.warning("[GDELT] 404 Not Found. The file is listed in lastupdate.txt but hasn't propagated to GDELT's CDN yet. Will retry next run.")
+        return
+      raise e
+      
     logger.info(f"[GDELT] Loaded {len(df)} raw rows.")
 
     logger.info("[GDELT] Running preprocessing funnel (Stages 1-5)...")

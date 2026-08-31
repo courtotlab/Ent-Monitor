@@ -7,6 +7,12 @@ from layers.ingestion.shared.models import RawPostDict
 from layers.shared.db import get_connection
 from layers.shared.embedding import deserialize
 
+def get_all_creators() -> list[tuple[str, str]]:
+  """Fetch all creators from the database (creator_id, platform)."""
+  with get_connection() as conn, conn.cursor() as cur:
+    cur.execute("SELECT creator_id, platform FROM creators")
+    return cur.fetchall()
+
 
 def fetch_sbert_anchors_with_source(sources: list[str] | None = None) -> list[tuple[int, str, list[float]]]:
   """Fetch active SBERT anchors with their source for ingestion filters."""
@@ -111,8 +117,8 @@ def get_recent_gt_spikes(trend_titles: list[str]) -> set[str]:
   with get_connection() as conn, conn.cursor() as cur:
     cur.execute(
       """
-   SELECT search_query FROM trend_signals
-   WHERE search_query = ANY(%s)
+   SELECT signal_data->>'gt_term' FROM trend_signals
+   WHERE signal_data->>'gt_term' = ANY(%s)
     AND signal_type = 'gt_spike'
     AND dismissed = FALSE
     AND detected_at >= NOW() - INTERVAL '7 days'
@@ -122,8 +128,11 @@ def get_recent_gt_spikes(trend_titles: list[str]) -> set[str]:
     return {row[0] for row in cur.fetchall()}
 
 
-def insert_gt_spike(signal_data: Json, search_query: str, linked_trend_id: str) -> None:
+def insert_gt_spike(signal_data: Json, linked_trend_id: str) -> None:
   """Insert a new GTrends spike into trend_signals."""
+  # We extract gt_term from signal_data to use as the trend name
+  gt_term = signal_data.adapted.get('gt_term') if hasattr(signal_data, 'adapted') else signal_data.get('gt_term')
+  
   with get_connection() as conn, conn.cursor() as cur:
     cur.execute(
       """
@@ -131,19 +140,19 @@ def insert_gt_spike(signal_data: Json, search_query: str, linked_trend_id: str) 
    VALUES (%s, %s, 'MODERATE', 0.5, 'gtrends_search')
    ON CONFLICT DO NOTHING
    """,
-      (linked_trend_id, search_query),
+      (linked_trend_id, gt_term),
     )
     cur.execute(
       """
    INSERT INTO trend_signals (
     signal_type, signal_data,
-    search_query, search_platforms, search_status, linked_trend_id
+    search_platforms, search_status, linked_trend_id
    ) VALUES (
     'gt_spike', %s,
-    %s, '["tiktok","instagram"]'::jsonb, 'pending', %s
+    '["tiktok","instagram"]'::jsonb, 'pending', %s
    )
    """,
-      (signal_data, search_query, linked_trend_id),
+      (signal_data, linked_trend_id),
     )
 
 
@@ -190,20 +199,20 @@ def upsert_gdelt_seen_url(url: str) -> None:
     )
 
 
-def insert_news_trend_signal(signal_data: Json, search_query: str) -> None:
+def insert_news_trend_signal(signal_data: Json) -> None:
   """Insert a new trend signal from GDELT news."""
   with get_connection() as conn, conn.cursor() as cur:
     cur.execute(
       """
    INSERT INTO trend_signals (
     signal_type, signal_data,
-    search_query, search_platforms,
+    search_platforms,
     search_status, detected_at
    ) VALUES (
     'news_match', %s,
-    %s, '["tiktok","instagram"]', 'pending', NOW()
+    '["tiktok","instagram"]', 'pending', NOW()
    )
    ON CONFLICT DO NOTHING
    """,
-      (signal_data, search_query),
+      (signal_data,),
     )

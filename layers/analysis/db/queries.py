@@ -322,10 +322,10 @@ def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> Non
              verification_status, lifecycle_status, first_detected_at, last_seen_at,
              last_verified_at,
              abstract, search_context, trend_name, harm_mechanism, evidence, centroid,
-             lifecycle_history, should_monitor, velocity_check_count, low_confidence)
+             lifecycle_history, should_monitor, velocity_check_count)
           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector,
                   jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', %s)),
-                  %s, CASE WHEN %s THEN 0 ELSE 0 END, %s)
+                  %s, CASE WHEN %s THEN 0 ELSE 0 END)
           ON CONFLICT (trend_id) DO UPDATE SET
             post_count          = trends.post_count + EXCLUDED.post_count,
             risk_score          = GREATEST(trends.risk_score, EXCLUDED.risk_score),
@@ -356,22 +356,20 @@ def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> Non
                                     ) combined
                                   ),
             last_seen_at        = EXCLUDED.last_seen_at,
-            trend_name          = COALESCE(EXCLUDED.trend_name, trends.trend_name),
+            trend_name          = COALESCE(trends.trend_name, EXCLUDED.trend_name),
             search_context      = COALESCE(EXCLUDED.search_context, trends.search_context),
             harm_mechanism      = COALESCE(EXCLUDED.harm_mechanism, trends.harm_mechanism),
             centroid            = COALESCE(EXCLUDED.centroid, trends.centroid),
             velocity_check_count= CASE WHEN EXCLUDED.should_monitor THEN 0 ELSE trends.velocity_check_count END,
-            should_monitor      = EXCLUDED.should_monitor OR trends.should_monitor,
-            low_confidence      = EXCLUDED.low_confidence
+            should_monitor      = EXCLUDED.should_monitor OR trends.should_monitor
         """,
         (trend_id, label, risk_score, post_count, Json(platforms), Json(slang_terms),
          verification, lifecycle,
          now, now, now, abstract or None, search_context or None, trend_name or None, harm_mechanism or None,
          Json(evidence_data) if evidence_data else None, centroid_str,
          lifecycle, post_count,
-         should_monitor, should_monitor, low_confidence),
+         should_monitor, should_monitor),
       )
-
 
       # 4. Update posts - handle re-assignment from old trends
       _reassign_and_update_posts(cur, posts, trend_id, label)
@@ -521,48 +519,39 @@ def insert_early_warning_signal(
   caption_text: str,
   intent: str,
   embedding: list[float],
-  search_query: str,
 ) -> bool:
   """Store one high-value unclassified post as a pending early_warning signal.
 
-  Returns False when this post_id already has a pending early_warning (dedup),
+  Returns False when this post_id already has an early_warning row (any status),
   True when a new row was inserted.
+
+  Dedup is enforced by the partial unique index idx_signals_ew_post_id.
   """
   try:
     embedding_json = json.dumps([float(x) for x in embedding])
     with get_connection() as conn, conn.cursor() as cur:
       cur.execute(
         """
-          SELECT 1 FROM trend_signals
-          WHERE signal_type = 'early_warning'
-            AND search_status = 'pending'
-            AND signal_data->>'post_id' = %s
-          LIMIT 1
-        """,
-        (post_id,),
-      )
-      if cur.fetchone():
-        return False
-
-      cur.execute(
-        """
           INSERT INTO trend_signals (
-            signal_type, signal_data, search_query, search_platforms, search_status
+            signal_type, signal_data, search_platforms, search_status
           ) VALUES (
             'early_warning',
             jsonb_build_object(
               'post_id', %s, 'platform', %s, 'caption_text', %s,
               'intent', %s, 'embedding', %s::jsonb
             ),
-            %s, %s::jsonb, 'pending'
+            %s::jsonb, 'pending'
           )
+          ON CONFLICT ((signal_data->>'post_id')) WHERE signal_type = 'early_warning'
+          DO NOTHING
         """,
         (
           post_id, platform, caption_text, intent, embedding_json,
-          search_query, json.dumps([platform]),
+          json.dumps([platform]),
         ),
       )
-    return True
+      inserted = cur.rowcount > 0
+    return inserted
   except Exception as exc:
     logger.warning("DB: failed to insert early_warning signal for post %s - %s", post_id, exc)
     return False
@@ -574,7 +563,7 @@ def fetch_pending_early_warnings() -> list[dict]:
     with get_connection() as conn, conn.cursor() as cur:
       cur.execute(
         """
-          SELECT signal_id, search_query, signal_data, detected_at
+          SELECT signal_id, signal_data, detected_at
           FROM trend_signals
           WHERE signal_type = 'early_warning'
             AND dismissed = FALSE
@@ -585,9 +574,8 @@ def fetch_pending_early_warnings() -> list[dict]:
       return [
         {
           "signal_id": r[0],
-          "search_query": r[1] or "",
-          "signal_data": r[2] or {},
-          "detected_at": r[3].isoformat() if r[3] else None,
+          "signal_data": r[1] or {},
+          "detected_at": r[2].isoformat() if r[2] else None,
         }
         for r in cur.fetchall()
       ]

@@ -4,6 +4,7 @@ import numpy as np
 from collections import defaultdict
 from langchain_core.messages import HumanMessage, SystemMessage
 from layers.analysis.utils.llm import invoke_llm
+from layers.shared.embedding import l2_normalize
 from pydantic import BaseModel, Field
 from scipy.spatial.distance import cdist
 
@@ -157,12 +158,9 @@ def execute_batch_cluster_merge(clusters: list[dict], llm_model: str = "gpt-4.1-
     if not posts:
       continue
     centroid = np.mean([p["embedding"] for p in posts], axis=0)
-    norm = np.linalg.norm(centroid)
-    if norm > 0:
-      centroid = centroid / norm
     final_clusters.append({
       "cluster_id": root_id,
-      "centroid": centroid,
+      "centroid": l2_normalize(centroid),
       "posts": posts
     })
       

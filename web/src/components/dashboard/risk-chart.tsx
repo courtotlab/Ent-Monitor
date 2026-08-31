@@ -35,7 +35,7 @@ export function RiskChart() {
   const chartData = React.useMemo(() => data ?? [], [data])
 
   const filteredData = React.useMemo(
-    () => filterByTimeRange(chartData, timeRange),
+    () => filterByTimeRange(chartData, timeRange, undefined, { harmful: 0, concerning: 0, safe: 0 }),
     [chartData, timeRange],
   )
 

@@ -1,8 +1,4 @@
-"""CLASSIFY node - single-shot classification.
-
-One call per cluster. Produces severity, risk_score, lifecycle, verification,
-supporting_evidence_ids, and rationale.
-"""
+"""CLASSIFY node - Produces severity, risk_score, lifecycle, verification, and rationale."""
 
 from __future__ import annotations
 
@@ -143,10 +139,8 @@ def calculate_deterministic_risk_score(severity: str, verification: str, mechani
   """Calculate risk_score using a strict deterministic matrix."""
   base_scores = {"HIGH": 0.85, "MODERATE": 0.50, "LOW": 0.15}
   
-  # 1. Safer lookup with normalization
   score = base_scores.get(severity.upper().strip(), 0.15)
-  
-  # 2. Apply evidence modifiers without breaking tier boundaries
+  # Apply evidence modifiers within boundaries
   if verification.upper().strip() == "CONFIRMED" and mechanism_match:
     score += 0.10
   elif verification.upper().strip() == "INSUFFICIENT_EVIDENCE":
@@ -166,7 +160,7 @@ def _build_prompt(state: AgentState) -> str:
 
   if state.get("matched_trend_id") is not None:
     post_count += state.get("db_trend_post_count", 0)
-    # If it was previously tracked, assume it likely already hit the platform threshold
+    # Assume previously tracked trends hit platform threshold
     if state.get("db_trend_post_count", 0) > 0:
         platform_count = max(platform_count, 2)
 
@@ -227,10 +221,7 @@ def _invoke_classify(prompt: str) -> ClassificationResult:
   )
 
 def classify_node(state: AgentState) -> dict:
-  """CLASSIFY node - single-shot classification.
-
-  Falls back to MODERATE + low_confidence=True when the LLM call fails.
-  """
+  """CLASSIFY node - single-shot classification with failure fallback."""
   print("  [CLASSIFY] Synthesizing evidence to determine safety label...")
   cluster_id = state.get("cluster_id", "unknown")
 

@@ -1,11 +1,4 @@
-"""VERIFY node - citation fact-checker.
-
-Re-fetches every cited PMID via pubmed_fetch_by_pmid.  Web citations get
-an HTTP HEAD check.  One batched Terra call for relevance checking.
-
-Critical distinction: PMIDNotFoundError (confirmed absent) triggers failure routing.
-A tool failure while checking does NOT - it's logged as tool_degraded.
-"""
+"""VERIFY node - citation fact-checker. PMIDNotFoundError triggers failure routing, tool errors degrade."""
 
 from __future__ import annotations
 
@@ -32,8 +25,7 @@ class VerifyResult(BaseModel):
 
 def verify_node(state: AgentState) -> dict:
   """VERIFY node - checks citations, then LLM evaluates relevance + consistency."""
-  # This node's sole purpose is catching LLM hallucinations from CLASSIFY.
-  # We literally ping the NCBI database to ensure the PMIDs exist in the real world.
+  # Ping databases to catch LLM hallucinations from CLASSIFY
   print("  [VERIFY] Fact-checking LLM citations against databases...")
   citations = state.get("citations", [])
   evidence = state.get("evidence", [])
@@ -41,7 +33,7 @@ def verify_node(state: AgentState) -> dict:
   tool_errors = state.get("tool_errors", [])
 
   if not citations and not evidence:
-    # Nothing to verify - pass through
+    # Pass through if no citations
     return {
       "verify_finding": VerifyFinding(
         citation_valid=True,
@@ -73,9 +65,7 @@ def verify_node(state: AgentState) -> dict:
           }
         )
       except PMIDNotFoundError:
-        # Confirmed hallucination - this IS a real signal
-        # The LLM completely hallucinated this PMID. We flag it as invalid, 
-        # which triggers the router to loop all the way back to RESEARCH to find a real paper.
+        # Confirmed hallucination - triggers router loop to RESEARCH
         citation_checks.append(
           {
             "citation": cit,
@@ -89,7 +79,7 @@ def verify_node(state: AgentState) -> dict:
           "VERIFY: PMID %s confirmed not found - hallucinated citation", pmid
         )
       except Exception as exc:
-        # Tool failure - NOT a confirmed-bad PMID
+        # Tool failure - NOT confirmed bad
         any_check_failed = True
         tool_errors.append(
           ToolError(
@@ -135,7 +125,7 @@ def verify_node(state: AgentState) -> dict:
         )
         any_check_failed = True
     else:
-      logger.warning("VERIFY: Citation malformed (no pmid or url) - treating as check failed: %s", cit.get("title", "Unknown"))
+      logger.warning("VERIFY: Citation malformed - treating as check failed: %s", cit.get("title", "Unknown"))
       citation_checks.append(
         {
           "citation": cit,
@@ -208,15 +198,14 @@ evidence), is the assigned label justified?
       label_consistent = result.label_consistent
       notes = result.notes
 
-      # Use the structured flag from CLASSIFY instead of re-parsing prose
+      # Use structured flag from CLASSIFY
       mechanism_level_match = state.get("mechanism_level_match", False)
       if not mechanism_level_match and citation_relevant:
         citation_relevant = False
         notes = "CLASSIFY flagged no mechanism_level_match. " + notes
         logger.info("VERIFY: mechanism_level_match=False - forcing citation_relevant=False")
     except Exception as exc:
-      # Note: Failing open here is intentional. If the LLM check crashes, we assume citations are valid
-      # and let downstream human review catch the tool_degraded flag, rather than blindly failing the cluster.
+      # Fail open on LLM crash, defer to human review via tool_degraded
       logger.warning("VERIFY LLM check failed: %s - assuming all valid", exc)
 
   invalid = [c for c in citation_checks if c["valid"] is False]
@@ -237,8 +226,7 @@ evidence), is the assigned label justified?
     citation_valid=citation_valid_overall,
     citation_relevant=citation_relevant,
     label_consistent=label_consistent,
-    # We only flag check_failed downstream if the overall citation_valid is still True.
-    # If it's already False (e.g. hallucinated PMID), the check failure is moot.
+    # Only flag check_failed downstream if overall citation_valid is True
     citation_check_failed=any_check_failed and citation_valid_overall,
     notes=notes,
   )

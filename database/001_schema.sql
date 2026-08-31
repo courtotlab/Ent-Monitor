@@ -95,19 +95,18 @@ CREATE TABLE trends (
 CREATE INDEX idx_trends_centroid        ON trends USING hnsw (centroid vector_cosine_ops);
 
 -- Table 5: trend_signals
--- Extracted signals that still require a verification workflow (e.g. news matches).
+-- Unverified external signals (news/trends) and accumulated early-warning noise posts.
 CREATE TABLE trend_signals (
     signal_id           SERIAL PRIMARY KEY,
-    signal_type         TEXT NOT NULL,           -- news_match | slow_spread
+    signal_type         TEXT NOT NULL,           -- news_match | gt_spike | early_warning
     signal_data         JSONB NOT NULL DEFAULT '{}',
-    search_query        TEXT NOT NULL,           -- Query used to search platforms and verify this signal
     search_platforms    JSONB NOT NULL DEFAULT '["reddit","tiktok","instagram"]',
     search_status       TEXT NOT NULL DEFAULT 'pending',
     linked_trend_id     TEXT REFERENCES trends(trend_id),
     dismissed           BOOLEAN DEFAULT FALSE,   -- TRUE if a clinician dismissed this signal
     detected_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT chk_signals_type CHECK (signal_type IN ('news_match', 'slow_spread', 'gt_spike', 'early_warning'))
+    CONSTRAINT chk_signals_type CHECK (signal_type IN ('news_match', 'gt_spike', 'early_warning'))
 );
 
 CREATE INDEX idx_signals_pending      ON trend_signals(search_status) WHERE search_status = 'pending';
@@ -116,8 +115,11 @@ CREATE INDEX idx_signals_trend        ON trend_signals(linked_trend_id) WHERE li
 CREATE INDEX idx_signals_dismissed    ON trend_signals(signal_type, dismissed) WHERE dismissed = FALSE;
 CREATE INDEX idx_signals_detected     ON trend_signals(detected_at);
 CREATE UNIQUE INDEX idx_signals_news_url ON trend_signals(
-    (signal_data->>'news_source_url'), search_query
+    (signal_data->>'news_source_url')
 ) WHERE signal_type = 'news_match';
+CREATE UNIQUE INDEX idx_signals_ew_post_id ON trend_signals(
+    (signal_data->>'post_id')
+) WHERE signal_type = 'early_warning';
 
 -- Table 6: pipeline_state
 -- Generic KV store for worker state.
@@ -151,7 +153,6 @@ CREATE TABLE agent_runs (
 
     CONSTRAINT chk_agent_status CHECK (status IN ('running', 'completed', 'failed', 'timeout'))
 );
-
 
 
 -- Helper Table 1: gdelt_seen_articles

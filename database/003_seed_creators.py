@@ -75,8 +75,11 @@ def seed_creators():
   cursor.close()
   conn.close()
     
-  print(f"Processed {total_processed} creators from config.")
-  print(f"Successfully inserted {inserted} new creators into the database.")
+  print(f"Processed {total_processed} creator(s) from config.")
+  if inserted == 0 and total_processed > 0:
+    print("Creator(s) already in the DB! (0 new inserts)")
+  else:
+    print(f"Successfully inserted {inserted} new creator(s) into the database.")
 
 if __name__ == "__main__":
   seed_creators()

@@ -1,8 +1,4 @@
-"""ASSESS node - deterministic evidence quality scorer.
-
-No LLM. Computes an evidence score based on source quality and relevance,
-and determines what is missing (the "evidence gap") if the score is too low.
-"""
+"""ASSESS node - deterministic evidence quality scorer and gap analyzer (No LLM)."""
 
 from __future__ import annotations
 
@@ -12,7 +8,7 @@ from layers.analysis.core.state import AgentState, EvidenceGap
 
 logger = logging.getLogger(__name__)
 
-# Deliberately modest - don't demand 3 perfect papers before proceeding.
+# Modest threshold - don't demand perfect papers before proceeding
 EVIDENCE_THRESHOLD = 0.45
 
 
@@ -39,16 +35,12 @@ def compute_evidence_score(state: AgentState) -> float:
 
 
 def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
-  """Decide what's missing and suggest a query + tool for RESEARCH.
-
-  Uses harm_hypothesis (if available) instead of raw search_context to keep
-  retry queries in clinical/mechanism terminology rather than reverting to the
-  trend's colloquial vocabulary.
-  """
+  """Suggest a query + tool for RESEARCH based on evidence gap."""
+  # Prefer harm_hypothesis (clinical terminology) over colloquial search_context
   evidence = state.get("evidence", [])
   pubmed_count = sum(1 for e in evidence if e["source"] == "pubmed")
 
-  # Prefer harm_hypothesis for retry queries; fall back to search_context
+  # Use harm_hypothesis or fallback to search_context
   hypothesis = state.get("harm_hypothesis", "") or ""
   base_query = hypothesis if hypothesis and hypothesis != "none - benign content" else state.get("search_context", "")
 
@@ -78,11 +70,7 @@ def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
 
 
 def assess_node(state: AgentState) -> dict:
-  """Compute evidence score and write it to state.
-
-  The actual routing decision is made by route_after_assess() which is
-  wired as a separate router node in graph.py.
-  """
+  """Compute evidence score and write it to state. (Routing happens in graph.py)."""
   score = compute_evidence_score(state)
   print(f"  [ASSESS] Evidence quality score: {score:.2f}/1.00")
   logger.info(

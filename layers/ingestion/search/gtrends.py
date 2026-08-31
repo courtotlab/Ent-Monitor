@@ -63,7 +63,7 @@ async def run_google_trends_worker():
 
     passed_count += 1
     try:
-      insert_gt_spike(Json({"gt_term": title, "gt_traffic": item.get("traffic"), "gt_rising_queries": passed_queries}), title, make_trend_id(title))
+      insert_gt_spike(Json({"gt_term": title, "gt_traffic": item.get("traffic"), "gt_rising_queries": passed_queries}), make_trend_id(title))
       dispatched_count += 1
     except Exception as e:
       logger.error(f"DB insert failed for '{title}': {e}")

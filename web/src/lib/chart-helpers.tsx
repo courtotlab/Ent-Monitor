@@ -22,23 +22,32 @@ export function filterByTimeRange<T extends DatePoint>(
   data: T[],
   timeRange: TimeRange,
   fallbackEndDate?: string,
+  emptyTemplate?: Omit<T, "date">
 ): T[] {
-  if (!data?.length) return []
+  const isDataEmpty = !data || data.length === 0;
+  if (isDataEmpty && !emptyTemplate) return [];
 
-  const endDate = new Date((fallbackEndDate ?? data[data.length - 1].date).split("T")[0])
-  const startDate = addDays(endDate, -TIME_RANGE_DAYS[timeRange])
-  const dataMap = new Map(data.map((item) => [item.date.split("T")[0], item]))
+  const referenceDate = fallbackEndDate 
+    ? fallbackEndDate 
+    : !isDataEmpty 
+      ? data[data.length - 1].date 
+      : formatISO(new Date(), { representation: "date" });
 
-  const zeroKeys = Object.fromEntries(
+  const endDate = new Date(referenceDate.split("T")[0]);
+  const startDate = addDays(endDate, -TIME_RANGE_DAYS[timeRange]);
+  
+  const dataMap = new Map((data || []).map((item) => [item.date.split("T")[0], item]));
+
+  const zeroKeys = emptyTemplate ?? (Object.fromEntries(
     Object.keys(data[0] as object).filter((k) => k !== "date").map((k) => [k, 0]),
-  ) as Partial<Omit<T, "date">>
+  ) as Omit<T, "date">);
 
-  const result: T[] = []
+  const result: T[] = [];
   for (let d = startDate; d <= endDate; d = addDays(d, 1)) {
-    const dateStr = formatISO(d, { representation: "date" })
-    result.push((dataMap.get(dateStr) ?? { date: dateStr, ...zeroKeys }) as T)
+    const dateStr = formatISO(d, { representation: "date" });
+    result.push((dataMap.get(dateStr) ?? { date: dateStr, ...zeroKeys }) as T);
   }
-  return result
+  return result;
 }
 
 export function formatChartDate(value: string): string {

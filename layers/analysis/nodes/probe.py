@@ -1,14 +1,5 @@
-"""PROBE node - evidence-delta check gating the known-trend fast-path merge.
-
-Runs ONE date-restricted PubMed query covering everything published since the
-trend's last full verification. Any new hit escalates the cluster to RESEARCH
-(the literature changed - the stored verdict must be re-examined); silence
-allows the LLM-free MERGE to proceed.
-
-Fail-open policy: on tool errors the cluster merges anyway. Availability beats
-marginal safety here because the contradiction/surge/staleness gates in
-route_after_pop remain active upstream.
-"""
+"""PROBE node - fast-path merge gate based on evidence-delta check."""
+# New PubMed hits escalate to RESEARCH, else MERGE. Tool errors fail-open to MERGE.
 
 from __future__ import annotations
 
@@ -39,13 +30,13 @@ def _pubmed_date_filter(query: str, since_iso: str | None) -> str:
 
 
 def probe_known(state: AgentState) -> Command:
-    """Cheap freshness probe for known trends whose verdict passed the route gates."""
+    """Cheap freshness probe for known trends."""
     matched_id = state.get("matched_trend_id") or "unknown"
     query = state.get("search_context", "") or state.get("trend_name", "")
     since_iso = state.get("db_trend_last_verified")
 
     if not query.strip():
-        # Nothing meaningful to search - merging is cheaper than escalating blind.
+        # No search context - merge rather than escalate blindly.
         logger.warning("PROBE: no search context for trend %s - failing open to merge", matched_id)
         return Command(goto="merge_known")
 

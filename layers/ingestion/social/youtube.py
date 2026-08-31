@@ -26,7 +26,9 @@ async def scrape_youtube(client, usernames: list[str], limit_posts: int) -> list
     )
 
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-      if item.get("id") or item.get("videoUrl"):
+      if "error" in item:
+        logger.warning(f"[YT] Apify returned error in creator item: {item.get('error')}")
+      elif item.get("id") or item.get("videoUrl"):
         posts.append(norm_youtube(item, item.get("channelName", "")))
   except Exception as e:
     logger.error(f"[YT] Scrape error: {e}")
@@ -61,7 +63,9 @@ async def scrape_youtube_explore(client, limit_posts: int) -> list[NormalizedPos
     )
 
     async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-      if item.get("id") or item.get("videoUrl"):
+      if "error" in item:
+        logger.warning(f"[YT] Apify returned error in explore item: {item.get('error')}")
+      elif item.get("id") or item.get("videoUrl"):
         posts.append(norm_youtube(item, "explore", "explore_feed"))
   except Exception as e:
     logger.error(f"[YT] Explore scrape error: {e}")

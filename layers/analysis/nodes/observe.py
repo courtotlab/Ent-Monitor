@@ -1,8 +1,4 @@
-"""OBSERVE node - intake and clustering.
-
-Pipeline: SBERT encode → UMAP → HDBSCAN → centroid misclass check → LLM validation.
-The LLM never clusters from scratch.  Math does the sorting; LLM validates intent.
-"""
+"""OBSERVE node - SBERT/UMAP/HDBSCAN clustering followed by LLM intent validation."""
 
 from __future__ import annotations
 
@@ -12,10 +8,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 
-import hdbscan
 import numpy as np
-import torch
-import umap
 import html
 from langchain_core.messages import HumanMessage, SystemMessage
 from layers.analysis.utils.llm import invoke_llm
@@ -31,27 +24,24 @@ from layers.analysis.db.queries import (
   write_safe_posts_to_db,
 )
 from layers.analysis.utils.batch_cluster_merge import execute_batch_cluster_merge
+from layers.analysis.utils.cluster_math import (
+  cluster_posts, compute_centroids, misclassification_check, merge_similar_clusters, group_by_similarity,
+  MERGE_SIMILARITY_THRESHOLD
+)
+from layers.shared.embedding import l2_normalize
 
 from layers.shared.trends import make_trend_id
 
 logger = logging.getLogger(__name__)
 
-#  Tunable parameters (see eval harness for validation plan)
-MIN_CLUSTER_SIZE = 3
-MIN_SAMPLES = 2
-UMAP_N_COMPONENTS = 8
-UMAP_N_NEIGHBORS = 10
-UMAP_MIN_DIST = 0.0
-CENTROID_MARGIN = 0.05  # relocate if cosine(post, other) > cosine(post, own) + margin
-MERGE_SIMILARITY_THRESHOLD = 0.98  # merge clusters whose centroids exceed this cosine sim
+# ------------------------------------------
+# CONSTANTS
+# ------------------------------------------
 
-#  Early-warning capture: lone professional-warning / harmful-advice posts that
-#  cannot form a cluster are diverted to trend_signals instead of dying in the
-#  SAFE sink, and auto-promoted into a full-pipeline cluster once enough of the
-#  same behavior accumulate across runs.
-EW_INTENTS = {"professional_warning", "advice_giving_harmful"}
+
+# Early-warning capture: divert high-value lone posts to trend_signals and auto-promote when threshold reached.
+EW_INTENTS = {"professional_warning", "advice_giving_harmful", "participant"}
 EW_PROMOTE_THRESHOLD = 3      # pending signals describing one behavior before promotion
-EW_SIMILARITY_THRESHOLD = 0.80  # cosine similarity for grouping signals across runs
 
 # SBERT model - same one used by SbertFilter in preprocess
 SBERT_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -59,223 +49,84 @@ SBERT_MODEL_NAME = "all-MiniLM-L6-v2"
 # LLM for cluster validation
 OBSERVE_MODEL = "gpt-4.1-mini"
 
-# Step 6 validates clusters with independent LLM calls - they parallelize cleanly.
-# Tune to your OpenAI tier's rate limit.
+# LLM cluster validation max concurrency
 CLUSTER_VALIDATION_MAX_WORKERS = 6
 
-#  Prompt injection hardening ()
-def sanitize_post_text(text: str, max_chars: int = 500) -> str:
-  """Escape tag-like sequences and cap length before XML-wrapping."""
-  return html.escape(text[:max_chars])
 
-def get_canonical_caption(posts: list[dict]) -> str:
-  """Get the most frequent exact caption in a cluster to use as a deterministic ID anchor."""
-  captions = [p.get("caption_text", "").strip() for p in posts if p.get("caption_text", "").strip()]
-  if not captions:
-    return "unknown_behavior"
-  return Counter(captions).most_common(1)[0][0]
+# ------------------------------------------
+# PYDANTIC SCHEMAS
+# ------------------------------------------
 
-def _is_prompt_injection(text: str) -> bool:
-  """Detect lazy prompt injection attempts in raw post text."""
-  patterns = [
-    "ignore previous", "ignore all", "system:", "assistant:",
-    "new instructions", "you are now"
-  ]
-  lower = text.lower()
-  return any(p in lower for p in patterns)
+IntentCategory = Literal[
+  "participant",           # doing the challenge/behavior themselves
+  "advice_seeking",        # asking if something is safe
+  "advice_giving_harmful", # recommending an unverified/unsafe practice
+  "professional_demo",     # professional demonstrating a procedure
+  "professional_warning",  # professional warning against / debunking the behavior
+  "unrelated",
+]
 
-#  XML wrapping
-def _wrap_post_xml(post: dict, cluster_label: int | str, centroid_sim: float) -> str:
-  """Wrap a single post in XML with metadata attributes."""
-  text = sanitize_post_text(post.get("caption_text", ""))
-  attrs = {
-    "id": post.get("post_id", "unknown"),
-    "platform": post.get("platform", "unknown"),
-    "sbert_score": f"{post.get('sbert_score', 0.0):.2f}",
-    "creator": post.get("creator_id", "unknown"),
-    "likes": str(post.get("likes", 0)),
-    "views": str(post.get("views", 0)),
-    "posted_at": post.get("posted_at", ""),
-    "hdbscan_cluster": str(cluster_label),
-    "centroid_sim": f"{centroid_sim:.2f}",
-  }
-  attr_str = " ".join(f'{k}="{v}"' for k, v in attrs.items())
-  return f"<post {attr_str}>\n  {text}\n</post>"
+class PostAnalysis(BaseModel):
+  post_id: str
+  anatomy: str = Field(description="Primary Anatomy")
+  condition: str = Field(description="Core Action/Condition")
+  harm_mechanism_anatomy: str = Field(
+    default="",
+    description="Anatomical site of the REPORTED INJURY/COMPLICATION, if different from the site of the action itself. Empty if same."
+  )
+  intent_category: IntentCategory = Field(description="Step 1 intent classification for this post")
 
-#  Embedding + clustering pipeline
-def _cluster_posts(
-  posts: list[dict],
-  sbert_model: SentenceTransformer,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-  """Run SBERT → UMAP → HDBSCAN.
+class ClusterValidation(BaseModel):
+  analysis: list[PostAnalysis] = Field(description="Step 1 analysis for EACH post")
+  dominant_anatomy: str = Field(description="Step 2 dominant anatomy")
+  ent_relevance: Literal["direct", "harm_outcome_only", "not_related"] = Field(
+    description="'direct' (action targets ENT), 'harm_outcome_only' (complication targets ENT), or 'not_related'"
+  )
+  split_post_ids: list[str] = Field(description="Off-topic or mixed-intent post IDs to eject")
+  professional_demo_post_ids: list[str] = Field(description="Professional demonstration/education posts - isolate")
+  professional_warning_post_ids: list[str] = Field(description="Professional posts warning against the behavior - isolate but preserve as evidence")
+  confirmed: bool = Field(description="Set to true unless the entire cluster is invalid")
+  cluster_name: str
+  search_context: str
+  triage_flag: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="One of: likely_harmful, unclear, likely_safe")
 
-  Returns:
-    embeddings: (N, 384) original SBERT embeddings
-    umap_embeddings: (N, 5) UMAP-reduced embeddings
-    labels: (N,) HDBSCAN cluster labels (-1 = noise)
-  """
-  texts = [(p.get("caption_text") or "").strip() for p in posts]
-  torch.manual_seed(42)
-  embeddings = sbert_model.encode(
-    texts, convert_to_numpy=True, normalize_embeddings=True, batch_size=32, show_progress_bar=False
+class Attachment(BaseModel):
+  post_id: str
+  attach_to_cluster: str = Field(description="The cluster_id to attach to")
+
+class NewGroup(BaseModel):
+  cluster_name: str
+  search_context: str
+  triage_flag: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="One of: likely_harmful, unclear, likely_safe")
+  ent_relevance: Literal["direct", "harm_outcome_only", "not_related"] = Field(
+    description="'direct' (action targets ENT), 'harm_outcome_only' (complication targets ENT), or 'not_related'"
+  )
+  post_ids: list[str]
+
+class PostIntentTag(BaseModel):
+  post_id: str
+  intent_category: IntentCategory = Field(
+    description="Intent of one unclassified/noise post (same taxonomy as cluster posts)"
   )
 
-  n_samples = len(texts)
-  effective_neighbors = min(UMAP_N_NEIGHBORS, n_samples - 1)
-  if effective_neighbors < 2 or n_samples <= UMAP_N_COMPONENTS:
-    # Too few posts for UMAP's spectral init (needs n_components < n_samples).
-    # HDBSCAN still works on the raw 384d normalized embeddings.
-    umap_embeddings = embeddings
-  else:
-    reducer = umap.UMAP(
-      n_components=UMAP_N_COMPONENTS,
-      n_neighbors=effective_neighbors,
-      min_dist=UMAP_MIN_DIST,
-      metric="cosine",
-      random_state=42,
-      # Spectral init needs n_components < n_neighbors; for borderline batch
-      # sizes, fall back to random init instead of crashing.
-      init="spectral" if effective_neighbors > UMAP_N_COMPONENTS else "random",
-    )
-    umap_embeddings = reducer.fit_transform(embeddings)
-
-  # HDBSCAN on UMAP space
-  clusterer = hdbscan.HDBSCAN(
-    min_cluster_size=MIN_CLUSTER_SIZE,
-    min_samples=MIN_SAMPLES,
-    cluster_selection_method="eom",
-    metric="euclidean",
-    core_dist_n_jobs=1,
+class UnclassifiedValidation(BaseModel):
+  attach: list[Attachment]
+  new_groups: list[NewGroup]
+  still_unclassified: list[str]
+  intent_tags: list[PostIntentTag] = Field(
+    default_factory=list,
+    description="One intent tag for EVERY post shown in the unclassified pool",
   )
-  labels = clusterer.fit_predict(umap_embeddings)
 
-  return embeddings, umap_embeddings, labels
+class PromotedNaming(BaseModel):
+  cluster_name: str = Field(description="Short behavioral name (max 5 words, e.g. 'garlic ear infection remedy')")
+  search_context: str = Field(description="1-2 sentence medical research context for this exact behavior")
 
-def _compute_centroids(
-  embeddings: np.ndarray,
-  labels: np.ndarray,
-) -> dict[int, np.ndarray]:
-  """Compute centroid (mean embedding) per cluster in original 384d space."""
-  centroids: dict[int, np.ndarray] = {}
-  unique_labels = set(labels)
-  unique_labels.discard(-1)  # skip noise
-  for lbl in unique_labels:
-    mask = labels == lbl
-    centroid = embeddings[mask].mean(axis=0)
-    # Normalize for cosine similarity
-    norm = np.linalg.norm(centroid)
-    if norm > 0:
-      centroid = centroid / norm
-    centroids[lbl] = centroid
-  return centroids
 
-def _misclassification_check(
-  embeddings: np.ndarray,
-  labels: np.ndarray,
-  centroids: dict[int, np.ndarray],
-) -> np.ndarray:
-  """Relocate posts closer to another cluster's centroid by > margin.
 
-  Returns updated labels array (modifies in-place too).
-  """
-  # Vectorized check for HDBSCAN edge cases. If a post is technically inside Cluster A, 
-  # but its math vector is > margin closer to Cluster B, we yank it into Cluster B.
-  if len(centroids) < 2:
-    return labels
-
-  centroid_ids = np.array(sorted(centroids.keys()))
-  centroid_matrix = np.array([centroids[c] for c in centroid_ids])
-
-  norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-  norms[norms == 0] = 1.0
-  normed_embeddings = embeddings / norms
-
-  sims = normed_embeddings @ centroid_matrix.T  # (N, K) cosine similarities
-
-  for i in range(len(embeddings)):
-    if labels[i] == -1:
-      continue
-
-    own_idx = np.searchsorted(centroid_ids, labels[i])
-    own_sim = sims[i, own_idx]
-
-    sims[i, own_idx] = -np.inf
-    best_other_idx = np.argmax(sims[i])
-    best_other_sim = sims[i, best_other_idx]
-
-    if best_other_sim > own_sim + CENTROID_MARGIN:
-      old_label = labels[i]
-      new_label = centroid_ids[best_other_idx]
-      labels[i] = new_label
-      logger.debug(
-        "Relocated post %d: cluster %d → %d (own=%.3f, other=%.3f)",
-        i, old_label, new_label, own_sim, best_other_sim,
-      )
-
-  return labels
-
-def _merge_similar_clusters(
-  embeddings: np.ndarray,
-  labels: np.ndarray,
-  centroids: dict[int, np.ndarray],
-  threshold: float = MERGE_SIMILARITY_THRESHOLD,
-) -> tuple[np.ndarray, dict[int, np.ndarray]]:
-  """Merge clusters whose centroids have cosine similarity > threshold.
-
-  Iteratively finds the most-similar pair above threshold, merges them
-  (reassigning all posts from the smaller cluster to the larger), and
-  recomputes centroids until no pair exceeds the threshold.
-  """
-  if len(centroids) < 2:
-    return labels, centroids
-
-  labels = labels.copy()
-  centroids = dict(centroids)  # mutable copy
-
-  merged = True
-  while merged:
-    merged = False
-    cluster_ids = sorted(centroids.keys())
-    if len(cluster_ids) < 2:
-      break
-
-    # Build similarity matrix
-    centroid_matrix = np.array([centroids[c] for c in cluster_ids])
-    sim_matrix = centroid_matrix @ centroid_matrix.T
-
-    # Zero out diagonal and lower triangle to avoid self-matches and duplicates
-    sim_matrix[np.tril_indices_from(sim_matrix)] = -np.inf
-
-    best_idx = np.unravel_index(np.argmax(sim_matrix), sim_matrix.shape)
-    best_sim = sim_matrix[best_idx]
-
-    if best_sim >= threshold:
-      id_a = cluster_ids[best_idx[0]]
-      id_b = cluster_ids[best_idx[1]]
-
-      # Merge smaller into larger
-      count_a = int(np.sum(labels == id_a))
-      count_b = int(np.sum(labels == id_b))
-      keep, drop = (id_a, id_b) if count_a >= count_b else (id_b, id_a)
-
-      labels[labels == drop] = keep
-      del centroids[drop]
-      
-      # Recompute the merged centroid
-      mask = labels == keep
-      new_centroid = embeddings[mask].mean(axis=0)
-      norm = np.linalg.norm(new_centroid)
-      if norm > 0:
-        new_centroid = new_centroid / norm
-      centroids[keep] = new_centroid
-
-      logger.info(
-        "Merged cluster %d into %d (sim=%.3f, new_size=%d)",
-        drop, keep, best_sim, int(np.sum(mask)),
-      )
-      merged = True
-
-  return labels, centroids
+# ------------------------------------------
+# PROMPTS
+# ------------------------------------------
 
 #  LLM validation calls
 _SYSTEM_PROMPT = """\
@@ -357,70 +208,57 @@ unrelated. A lone professional warning about a brand-new behavior is an early \
 signal, not noise - tag it precisely.
 """
 
-IntentCategory = Literal[
-  "participant",           # doing the challenge/behavior themselves
-  "advice_seeking",        # asking if something is safe
-  "advice_giving_harmful", # recommending an unverified/unsafe practice
-  "professional_demo",     # professional demonstrating a procedure
-  "professional_warning",  # professional warning against / debunking the behavior
-  "unrelated",
-]
 
-class PostAnalysis(BaseModel):
-  post_id: str
-  anatomy: str = Field(description="Primary Anatomy")
-  condition: str = Field(description="Core Action/Condition")
-  harm_mechanism_anatomy: str = Field(
-    default="",
-    description="Anatomical site of the REPORTED INJURY/COMPLICATION, if "
-                 "different from the site of the action itself. Empty if same."
-  )
-  intent_category: IntentCategory = Field(description="Step 1 intent classification for this post")
+# ------------------------------------------
+# HELPER UTILITIES
+# ------------------------------------------
 
-class ClusterValidation(BaseModel):
-  analysis: list[PostAnalysis] = Field(description="Step 1 analysis for EACH post")
-  dominant_anatomy: str = Field(description="Step 2 dominant anatomy")
-  ent_relevance: Literal["direct", "harm_outcome_only", "not_related"] = Field(
-    description="'direct' if the action itself targets ENT anatomy; "
-                 "'harm_outcome_only' if the action isn't ENT-branded but the "
-                 "REPORTED complication is; 'not_related' otherwise."
-  )
-  split_post_ids: list[str] = Field(description="Off-topic or mixed-intent post IDs to eject")
-  professional_demo_post_ids: list[str] = Field(description="Professional demonstration/education posts - isolate")
-  professional_warning_post_ids: list[str] = Field(description="Professional posts warning against the behavior - isolate but preserve as evidence")
-  confirmed: bool = Field(description="Set to true unless the entire cluster is invalid")
-  cluster_name: str
-  search_context: str
-  triage_flag: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="One of: likely_harmful, unclear, likely_safe")
+#  Prompt injection hardening ()
+def sanitize_post_text(text: str, max_chars: int = 500) -> str:
+  """Escape tag-like sequences and cap length before XML-wrapping."""
+  return html.escape(text[:max_chars])
 
-class Attachment(BaseModel):
-  post_id: str
-  attach_to_cluster: str = Field(description="The cluster_id to attach to")
+def get_canonical_caption(posts: list[dict]) -> str:
+  """Get the most frequent exact caption in a cluster to use as a deterministic ID anchor."""
+  captions = [p.get("caption_text", "").strip() for p in posts if p.get("caption_text", "").strip()]
+  if not captions:
+    return "unknown_behavior"
+  return Counter(captions).most_common(1)[0][0]
 
-class NewGroup(BaseModel):
-  cluster_name: str
-  search_context: str
-  triage_flag: Literal["likely_harmful", "unclear", "likely_safe"] = Field(description="One of: likely_harmful, unclear, likely_safe")
-  ent_relevance: Literal["direct", "harm_outcome_only", "not_related"] = Field(
-    description="'direct' if the action itself targets ENT anatomy; "
-                 "'harm_outcome_only' if the action isn't ENT-branded but the "
-                 "REPORTED complication is; 'not_related' otherwise."
-  )
-  post_ids: list[str]
+def _is_prompt_injection(text: str) -> bool:
+  """Detect lazy prompt injection attempts in raw post text."""
+  patterns = [
+    "ignore previous", "ignore all", "system:", "assistant:",
+    "new instructions", "you are now"
+  ]
+  lower = text.lower()
+  return any(p in lower for p in patterns)
 
-class PostIntentTag(BaseModel):
-  post_id: str
-  intent_category: IntentCategory = Field(
-    description="Intent of one unclassified/noise post (same taxonomy as cluster posts)"
-  )
+#  XML wrapping
+def _wrap_post_xml(post: dict, cluster_label: int | str, centroid_sim: float) -> str:
+  """Wrap a single post in XML with metadata attributes."""
+  text = sanitize_post_text(post.get("caption_text", ""))
+  attrs = {
+    "id": post.get("post_id", "unknown"),
+    "platform": post.get("platform", "unknown"),
+    "sbert_score": f"{post.get('sbert_score', 0.0):.2f}",
+    "creator": post.get("creator_id", "unknown"),
+    "likes": str(post.get("likes", 0)),
+    "views": str(post.get("views", 0)),
+    "posted_at": post.get("posted_at", ""),
+    "hdbscan_cluster": str(cluster_label),
+    "centroid_sim": f"{centroid_sim:.2f}",
+  }
+  attr_str = " ".join(f'{k}="{v}"' for k, v in attrs.items())
+  return f"<post {attr_str}>\n  {text}\n</post>"
 
-class UnclassifiedValidation(BaseModel):
-  attach: list[Attachment]
-  new_groups: list[NewGroup]
-  still_unclassified: list[str]
-  intent_tags: list[PostIntentTag] = Field(
-    default_factory=list,
-    description="One intent tag for EVERY post shown in the unclassified pool",
+
+def _validate_clusters(messages: list, schema: type[BaseModel]) -> BaseModel:
+  """Call gpt-4.1-mini to validate the math-based clusters using structured output."""
+  return invoke_llm(
+    model=OBSERVE_MODEL,
+    messages=messages,
+    schema=schema,
   )
 
 def _match_clusters_to_db_trends(validated_clusters: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -458,43 +296,24 @@ def _match_clusters_to_db_trends(validated_clusters: list[dict[str, object]]) ->
   return validated_clusters
 
 
-def _group_by_similarity(vectors: np.ndarray, threshold: float = EW_SIMILARITY_THRESHOLD) -> list[list[int]]:
-  """Greedy grouping of L2-normalized vectors: each vector joins the first group whose seed it resembles."""
-  groups: list[list[int]] = []
-  seeds: list[np.ndarray] = []
-  for idx in range(len(vectors)):
-    v = vectors[idx]
-    for g_idx, seed in enumerate(seeds):
-      if float(seed @ v) >= threshold:
-        groups[g_idx].append(idx)
-        break
-    else:
-      groups.append([idx])
-      seeds.append(v)
-  return groups
-
 
 def _promote_early_warnings(validated_clusters: list[dict], sbert_model) -> None:
-  """Promote accumulated early_warning signals into a synthetic full-pipeline cluster.
-
-  When >= EW_PROMOTE_THRESHOLD pending signals describe the same behavior
-  (pairwise cosine >= EW_SIMILARITY_THRESHOLD via greedy seeding), they enter
-  the queue as a cluster so RESEARCH→DECIDE classify them like any other.
-  Groups that merely corroborate an already-tracked trend or a duplicate a
-  cluster formed this batch are left pending untouched.
-  """
+  """Promote accumulated early_warning signals into a synthetic cluster for the pipeline."""
   signals = fetch_pending_early_warnings()
   if len(signals) < EW_PROMOTE_THRESHOLD:
     return
 
-  captions = [(s["signal_data"] or {}).get("caption_text", "") for s in signals]
-  vectors = sbert_model.encode(
-    captions,
-    convert_to_numpy=True,
-    normalize_embeddings=True,
-    batch_size=32,
-    show_progress_bar=False,
-  )
+  # Load pre-computed normalized embeddings from the DB
+  vectors_list = [(s["signal_data"] or {}).get("embedding", []) for s in signals]
+  if not all(vectors_list):
+    logger.warning("OBSERVE: Some early warnings are missing embeddings. Falling back to SBERT.")
+    captions = [(s["signal_data"] or {}).get("caption_text", "") for s in signals]
+    vectors = sbert_model.encode(
+      captions, convert_to_numpy=True, normalize_embeddings=True,
+      batch_size=32, show_progress_bar=False,
+    )
+  else:
+    vectors = np.array(vectors_list, dtype=np.float32)
 
   batch_centroids = (
     np.array([c["centroid"] for c in validated_clusters], dtype=np.float32)
@@ -502,26 +321,25 @@ def _promote_early_warnings(validated_clusters: list[dict], sbert_model) -> None
   )
 
   promoted = 0
-  for group in _group_by_similarity(vectors):
+  for group in group_by_similarity(vectors):
     if len(group) < EW_PROMOTE_THRESHOLD:
       continue
 
     members = [signals[i] for i in group]
-    centroid = vectors[group].mean(axis=0)
-    norm = np.linalg.norm(centroid)
-    if norm > 0:
-      centroid = centroid / norm
+    centroid = l2_normalize(vectors[group].mean(axis=0))
 
     # Corroborating an already-tracked trend? The warnings add nothing new.
     if find_nearest_trend(centroid.tolist()):
-      logger.info("OBSERVE: early-warning group corroborates an existing trend - not promoting")
+      logger.info("OBSERVE: early-warning group corroborates an existing trend - marking as promoted")
+      mark_early_warnings_promoted([m["signal_id"] for m in members])
       continue
 
     # Same behavior already surfaced as a real cluster this batch?
     if batch_centroids is not None and len(batch_centroids):
       sims = batch_centroids @ centroid
       if float(sims.max()) >= MERGE_SIMILARITY_THRESHOLD:
-        logger.info("OBSERVE: early-warning group duplicates a current-batch cluster - not promoting")
+        logger.info("OBSERVE: early-warning group duplicates a current-batch cluster - marking as promoted")
+        mark_early_warnings_promoted([m["signal_id"] for m in members])
         continue
 
     posts = [
@@ -536,9 +354,25 @@ def _promote_early_warnings(validated_clusters: list[dict], sbert_model) -> None
     if not posts:
       continue
 
-    names = [m["search_query"] for m in members if m.get("search_query")]
-    modal_name = Counter(names).most_common(1)[0][0] if names else f"early warning behavior {promoted + 1}"
-    short_name = " ".join(modal_name.split()[:5]) or modal_name
+    canonical = get_canonical_caption(posts)
+    
+    # Generate a proper name and search context using the LLM instead of raw captions
+    posts_text = "\n".join(f"- {p.get('caption_text', '')[:500]}" for p in posts)
+    try:
+      naming = invoke_llm(
+        model=OBSERVE_MODEL,
+        messages=[
+          SystemMessage(content="You generate short names and medical search contexts for social media trend clusters."),
+          HumanMessage(content=f"Generate a name and search context for this cluster of posts:\n\n{posts_text}")
+        ], schema=PromotedNaming
+      )
+      short_name = naming.cluster_name
+      search_context = naming.search_context
+    except Exception as exc:
+      logger.warning("OBSERVE: Failed to name promoted cluster, using fallbacks: %s", exc)
+      short_name = f"early warning {promoted + 1}"
+      search_context = canonical if canonical != "unknown_behavior" else "early warning"
+
     intents = {(m["signal_data"] or {}).get("intent") for m in members}
     triage = "likely_harmful" if "advice_giving_harmful" in intents else "unclear"
 
@@ -546,11 +380,11 @@ def _promote_early_warnings(validated_clusters: list[dict], sbert_model) -> None
       "cluster_id": f"cluster_promoted_{promoted}",
       "cluster_type": "behavioral",
       "posts": posts,
-      "search_context": modal_name,
+      "search_context": search_context,
       "triage_flag": triage,
       "centroid": centroid.tolist(),
       "cluster_name": short_name,
-      "deterministic_trend_id": make_trend_id(get_canonical_caption(posts)),
+      "deterministic_trend_id": make_trend_id(canonical),
     })
     mark_early_warnings_promoted([m["signal_id"] for m in members])
     logger.info(
@@ -559,22 +393,15 @@ def _promote_early_warnings(validated_clusters: list[dict], sbert_model) -> None
     )
     promoted += 1
 
-def _validate_clusters(messages: list, schema: type[BaseModel]) -> BaseModel:
-  """Call gpt-4.1-mini to validate the math-based clusters using structured output."""
-  return invoke_llm(
-    model=OBSERVE_MODEL,
-    messages=messages,
-    schema=schema,
-  )
+
+# ------------------------------------------
+# MAIN NODE
+# ------------------------------------------
 
 #  Main node function
 def observe_node(state: AgentState) -> dict:
-  """OBSERVE node - clusters posts and validates via LLM.
-
-  Returns a dict of state updates (clusters list ready for the outer loop).
-  """
-  # This node NEVER lets the LLM cluster from scratch. We do the heavy lifting 
-  # with math (SBERT+HDBSCAN) first, and only use the LLM to validate the mathematical intent.
+  """OBSERVE node - clusters posts and validates via LLM, returning state updates."""
+  # LLM only validates math-based clusters
   raw_posts = state.get("posts", [])
   posts = []
   for p in raw_posts:
@@ -591,19 +418,19 @@ def observe_node(state: AgentState) -> dict:
   sbert_model = SentenceTransformer(SBERT_MODEL_NAME)
   # We use _umap_embs (with underscore) to indicate it's intentionally unused here,
   # but keeping the name for code readability.
-  embeddings, _umap_embs, labels = _cluster_posts(posts, sbert_model)
+  embeddings, _umap_embs, labels = cluster_posts(posts, sbert_model)
 
   #  Step 2: Compute centroids
-  centroids = _compute_centroids(embeddings, labels)
+  centroids = compute_centroids(embeddings, labels)
 
   #  Step 3: Misclassification check
-  labels = _misclassification_check(embeddings, labels, centroids)
+  labels = misclassification_check(embeddings, labels, centroids)
 
   # Recompute centroids after relocation
-  centroids = _compute_centroids(embeddings, labels)
+  centroids = compute_centroids(embeddings, labels)
 
   #  Step 3b: Merge similar clusters
-  labels, centroids = _merge_similar_clusters(embeddings, labels, centroids)
+  labels, centroids = merge_similar_clusters(embeddings, labels, centroids)
 
   #  Step 4: Group posts by cluster
   cluster_groups: dict[int, list[tuple[int, dict]]] = {}
@@ -619,17 +446,17 @@ def observe_node(state: AgentState) -> dict:
   #  Step 4b: Batch LLM Cluster Merge
   merge_input = []
   for lbl, members in cluster_groups.items():
-    cluster_posts = []
+    c_posts = []
     for idx, p in members:
       p_copy = dict(p)
       p_copy["embedding"] = embeddings[idx]
       p_copy["original_idx"] = idx
-      cluster_posts.append(p_copy)
+      c_posts.append(p_copy)
     
     merge_input.append({
       "cluster_id": lbl,
       "centroid": centroids[lbl],
-      "posts": cluster_posts
+      "posts": c_posts
     })
 
   merged_output = execute_batch_cluster_merge(merge_input)
@@ -693,7 +520,7 @@ def observe_node(state: AgentState) -> dict:
   for lbl, members in cluster_groups.items():
     result = results_by_lbl[lbl]
 
-    # Handle splits - moved to noise. If LLM unconfirms cluster without listing specific splits, reject all.
+    # Handle splits - unconfirmed clusters reject all posts if no specific splits listed.
     split_ids = set(result.get("split_post_ids", []))
     demo_ids = set(result.get("professional_demo_post_ids", []))
     warning_ids = set(result.get("professional_warning_post_ids", []))
@@ -724,9 +551,8 @@ def observe_node(state: AgentState) -> dict:
         "posts": kept_posts,
         "search_context": result.get("search_context", ""),
         "triage_flag": result.get("triage_flag", "unclear"),
-        # is_known_trend/matched_trend_id are set later by _match_clusters_to_db_trends (centroid KNN).
-        # the only match that also carries matched_trend_id + db_* context.
-        "centroid": centroids.get(lbl, np.zeros(sbert_model.get_embedding_dimension())).tolist(),  # Stored for vector/similarity checks
+        # matched_trend_id set later via KNN
+        "centroid": centroids.get(lbl, np.zeros(sbert_model.get_embedding_dimension())).tolist(),
         "cluster_name": result.get("cluster_name", f"cluster_{lbl}"),
         "deterministic_trend_id": make_trend_id(get_canonical_caption(kept_posts)),
       }
@@ -788,10 +614,7 @@ def observe_node(state: AgentState) -> dict:
 
       ng_post_ids = set(ng.get("post_ids", []))
 
-      # Guard against the LLM returning the same post_id in both 'attach'
-      # and 'new_groups' in a single response. 'attach' is processed first
-      # and wins; without this a post silently lands in two clusters'
-      # `posts` lists at once.
+      # Guard against LLM returning post_id in both 'attach' and 'new_groups'. 'attach' wins.
       overlap = ng_post_ids & attached_ids
       if overlap:
         logger.warning(
@@ -803,9 +626,7 @@ def observe_node(state: AgentState) -> dict:
 
       ng_posts_info = [(i, p, meta) for i, p, meta in noise_posts if p.get("post_id") in ng_post_ids]
       if ng_posts_info:
-        # Demo posts are neutral professional content and never become trends.
-        # Warning posts are corroborating evidence - a pure-warning group
-        # survives Step 7 instead of being dropped outright.
+        # Drop new groups containing professional demo posts. Pure-warning groups survive.
         has_demo = any(
           meta.get("is_professional_context") and meta.get("professional_type") == "demo"
           for _, _, meta in ng_posts_info
@@ -817,11 +638,7 @@ def observe_node(state: AgentState) -> dict:
         ng_posts = [p for _, p, _ in ng_posts_info]
         ng_indices = [i for i, _, _ in ng_posts_info]
 
-        ng_centroid = embeddings[ng_indices].mean(axis=0)
-        norm = np.linalg.norm(ng_centroid)
-        if norm > 0:
-            ng_centroid = ng_centroid / norm
-        ng_centroid = ng_centroid.tolist()
+        ng_centroid = l2_normalize(embeddings[ng_indices].mean(axis=0)).tolist()
 
         new_id = f"cluster_new_{len(validated_clusters)}"
 
@@ -844,9 +661,7 @@ def observe_node(state: AgentState) -> dict:
         )
         created_ng_ids.update(p.get("post_id") for p in ng_posts)
 
-    # Remaining noise → UNCLASSIFIED cluster (anything not explicitly attached or put in a *created* new group).
-    # Only created groups count here: posts from dropped/out-of-scope groups must still land in the SAFE sink,
-    # otherwise they keep gate4_category=NULL and get re-fetched on every future run.
+    # Remaining noise goes to SAFE sink to prevent infinite re-fetching.
     mentioned_ids = attached_ids | created_ng_ids
     intent_by_id = {
       t.get("post_id"): t.get("intent_category")
@@ -854,10 +669,7 @@ def observe_node(state: AgentState) -> dict:
     }
     leftover = [(i, p) for i, p, _ in noise_posts if p.get("post_id") not in mentioned_ids]
 
-    #  Step 8: lone high-value signals survive as trend_signals rows instead of
-    #  dying here - a single professional warning about a brand-new behavior is
-    #  an early signal, not noise. They stay pending until enough accumulate to
-    #  promote (_promote_early_warnings below).
+    # Step 8: Divert lone high-value signals to trend_signals to await promotion.
     ew_posts = [(i, p) for i, p in leftover if intent_by_id.get(p.get("post_id")) in EW_INTENTS]
     plain_posts = [p for i, p in leftover if intent_by_id.get(p.get("post_id")) not in EW_INTENTS]
 
@@ -872,7 +684,6 @@ def observe_node(state: AgentState) -> dict:
           caption_text=caption,
           intent=intent_by_id[pid] if pid in intent_by_id else "unrelated",
           embedding=embeddings[i].tolist(),
-          search_query=caption[:120] or pid,
         )
         if inserted:
           diverted += 1
@@ -892,10 +703,7 @@ def observe_node(state: AgentState) -> dict:
       except Exception as exc:
         logger.warning("OBSERVE: failed to write safe posts to DB - %s", exc)
 
-  # Invariant check: every input post should land in exactly one place - a
-  # validated cluster, or the SAFE/unclassified sink. Catches silent
-  # duplication (e.g. a post_id returned in both 'attach' and a
-  # 'new_groups' entry in the same LLM response) before it reaches the DB.
+  # Invariant check: ensure no silent duplication of posts across clusters.
   seen_ids: dict[str, str] = {}
   duplicates_found = False
   for cluster in validated_clusters:
@@ -929,8 +737,7 @@ def observe_node(state: AgentState) -> dict:
   # Match clusters to existing DB trends across runs
   validated_clusters = _match_clusters_to_db_trends(validated_clusters)
 
-  # The outer orchestrator iterates validated_clusters and invokes the
-  # graph once per cluster.  Return the full list for it to consume.
+  # Return validated clusters for orchestrator to consume
   return {
     "clusters_queue": validated_clusters,
     "cluster_results": [],
