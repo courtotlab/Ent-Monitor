@@ -18,8 +18,15 @@ fi
 echo "Exporting uv dependencies to requirements.txt..."
 uv pip compile pyproject.toml -o requirements.txt
 
-# 3. Deploy
+# 3. Enable Required Google Cloud APIs
+echo "Ensuring required GCP APIs are enabled..."
+gcloud services enable artifactregistry.googleapis.com cloudbuild.googleapis.com
+
+# 4. Deploy
 echo "Deploying to App Engine..."
-gcloud app deploy deploy/app.yaml --quiet
+# Copy app.yaml to root so gcloud uploads the whole repository, not just the deploy/ folder
+cp deploy/app.yaml ./app.yaml
+gcloud app deploy app.yaml --quiet
+rm ./app.yaml
 
 echo "API Deployment complete!"
