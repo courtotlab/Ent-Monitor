@@ -4,7 +4,7 @@ instance_class: F1
 
 env_variables:
   # The API URL must be updated to the FastAPI App Engine URL once deployed
-  NEXT_PUBLIC_API_URL: "https://YOUR_API_APP_ENGINE_URL/api/v1"
+  NEXT_PUBLIC_API_URL: "https://courtot-gsoc2026.nn.r.appspot.com/api/v1"
 
 handlers:
   - url: /.*

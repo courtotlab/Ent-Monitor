@@ -17,8 +17,10 @@ echo -e "\n[3/5] Setting up Python dependencies..."
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD/..")
 cd "$PROJECT_ROOT"
 
-# Increase network timeout for large packages
+# Increase network timeout and explicitly route cache to the 100GB drive
 export UV_HTTP_TIMEOUT=120
+export UV_CACHE_DIR=/mnt/data/uv_cache
+mkdir -p $UV_CACHE_DIR
 uv sync
 
 # 4. Environment Variables
