@@ -17,6 +17,8 @@ echo -e "\n[3/5] Setting up Python dependencies..."
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD/..")
 cd "$PROJECT_ROOT"
 
+# Increase network timeout for large packages
+export UV_HTTP_TIMEOUT=120
 uv sync
 
 # 4. Environment Variables
@@ -30,9 +32,18 @@ else
 fi
 
 # 5. Database Setup
-echo -e "\n[5/5] Spinning up Docker containers..."
+echo -e "\n[5/6] Spinning up Docker containers..."
 cd deploy
 sudo docker-compose up -d
+
+echo "Waiting for PostgreSQL to initialize..."
+sleep 20
+
+# 6. Seed Database
+echo "Seeding database with anchors and creators..."
+cd "$PROJECT_ROOT"
+$HOME/.local/bin/uv run python database/002_seed_anchors.py
+$HOME/.local/bin/uv run python database/003_seed_creators.py
 
 echo -e "\n[6/6] Configuring Background Jobs (Crontab)..."
 

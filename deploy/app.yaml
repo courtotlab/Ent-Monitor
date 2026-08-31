@@ -1,4 +1,4 @@
-runtime: python311
+runtime: python313
 instance_class: F1
 
 entrypoint: gunicorn -k uvicorn.workers.UvicornWorker api.server:app
