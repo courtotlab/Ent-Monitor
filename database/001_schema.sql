@@ -1,4 +1,4 @@
--- Pediatric ENT Surveillance Pipeline — Schema
+-- Pediatric ENT Surveillance Pipeline - Schema
 -- PostgreSQL 16 + pgvector
 
 CREATE EXTENSION IF NOT EXISTS vector;

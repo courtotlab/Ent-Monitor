@@ -425,7 +425,7 @@ export default function TrendDetailsPage() {
                           <LifecycleBadge status={entry.status} />
                         </TableCell>
                         <TableCell className="px-4 py-2 text-right tabular-nums text-sm">
-                          {entry.post_count.toLocaleString()}
+                          {entry.post_count?.toLocaleString() ?? "-"}
                         </TableCell>
                       </TableRow>
                     ))}

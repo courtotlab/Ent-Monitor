@@ -22,6 +22,7 @@ export UV_HTTP_TIMEOUT=120
 export UV_CACHE_DIR=/mnt/data/uv_cache
 mkdir -p $UV_CACHE_DIR
 uv sync
+uv run python -m spacy download en_core_web_sm
 
 # 4. Environment Variables
 echo -e "\n[4/5] Checking .env configuration..."

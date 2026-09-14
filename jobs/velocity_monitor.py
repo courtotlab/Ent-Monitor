@@ -36,12 +36,10 @@ MAX_AGE_DAYS = 14
 #   Check 1: at the ~5th hour  → see if it's spreading fast
 #   Check 2: at the ~10th hour → final check; then should_monitor is set to FALSE
 
-
 # Apify config - set in .env
-APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN", "")
+APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
 
-
-# ─ Apify keyword search stub ─
+# Apify keyword search stub
 
 import asyncio
 from apify_client import ApifyClientAsync
@@ -53,11 +51,11 @@ async def keyword_search(
   since: datetime,
 ) -> list[dict]:
   """Search for new posts matching the given keywords using Apify."""
-  if not APIFY_API_TOKEN:
-    logger.warning("APIFY_API_TOKEN not set - running in stub mode (returns empty).")
+  if not APIFY_TOKEN:
+    logger.warning("APIFY_TOKEN not set - running in stub mode (returns empty).")
     return []
 
-  client = ApifyClientAsync(APIFY_API_TOKEN)
+  client = ApifyClientAsync(APIFY_TOKEN)
   tasks = [
     scrape_tiktok_search(client, keywords, 50, "velocity_monitor"),
     scrape_instagram_search(client, keywords, 50, "velocity_monitor")

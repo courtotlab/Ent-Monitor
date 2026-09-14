@@ -1,6 +1,4 @@
 """
-jobs/lifecycle_monitor.py
-─────────────────────────
 Scans all active trends and transitions stale ones through two lifecycle stages:
 
   - Declining : no new posts linked to the trend in the last 14 days
@@ -31,13 +29,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────
 # Tunables
 DECLINING_THRESHOLD_DAYS = 14   # No new posts in 14 days → Declining
 LATENT_THRESHOLD_DAYS    = 21   # Already Declining + no new posts in 21 days → Latent
-# ──────────────────────────────────────────────
 
-# Only real growing trends can go Declining — they had a rise so they can fade
+# Only real growing trends can go Declining - they had a rise so they can fade
 DECLINABLE_STATUSES = ("Emergence", "Growth", "Resurfacing")
 
 # Isolated incidents never rose, so they skip Declining and go straight to Latent
@@ -119,7 +115,7 @@ def run_lifecycle_monitor() -> None:
     silence    = days_since(last_seen)
 
     if status == DECLINING_STATUS:
-      # Already Declining — promote to Latent if silence exceeds 21 days
+      # Already Declining - promote to Latent if silence exceeds 21 days
       if silence >= LATENT_THRESHOLD_DAYS:
         logger.info(
           "Trend '%s' [%s]: %.1f days silent → Latent", name, trend_id, silence
@@ -133,7 +129,7 @@ def run_lifecycle_monitor() -> None:
         )
 
     elif status in DECLINABLE_STATUSES:
-      # Real trend (Emergence/Growth/Resurfacing) — mark Declining if silent for 14 days
+      # Real trend (Emergence/Growth/Resurfacing) - mark Declining if silent for 14 days
       if silence >= DECLINING_THRESHOLD_DAYS:
         logger.info(
           "Trend '%s' [%s]: %.1f days silent → Declining", name, trend_id, silence
@@ -146,7 +142,7 @@ def run_lifecycle_monitor() -> None:
         )
 
     elif status == ISOLATED_STATUS:
-      # Isolated incidents never grew, so skip Declining entirely — go straight to Latent
+      # Isolated incidents never grew, so skip Declining entirely - go straight to Latent
       if silence >= LATENT_THRESHOLD_DAYS:
         logger.info(
           "Trend '%s' [%s]: Isolated incident, %.1f days silent → Latent (no Declining stage)",
