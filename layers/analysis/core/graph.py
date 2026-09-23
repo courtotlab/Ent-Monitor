@@ -84,6 +84,7 @@ def run_analysis(posts: list[dict], run_id: str | None = None) -> dict:
     "db_trend_lifecycle": None,
     "db_trend_last_seen": None,
     "db_trend_last_verified": None,
+    "db_trend_low_confidence": None,
     # Research accumulators
     "search_queries": [],
     "evidence": [],
@@ -144,12 +145,12 @@ def merge_known_node(state: AgentState) -> dict:
   posts = state.get("posts", [])
   centroid = state.get("centroid")
 
-  print(f"  [MERGE] Fast-path: merging {len(posts)} posts into existing trend {trend_id}")
+  logger.info("MERGE: Fast-path merging cluster %s (%d posts) into existing trend %s", cluster_id, len(posts), trend_id)
 
   result = merge_posts_into_trend(trend_id, posts, new_centroid=centroid)
 
   if result is None:
-    logger.warning("MERGE: fast-path failed for trend %s - will appear as skipped", trend_id)
+    logger.warning("MERGE: fast-path failed for cluster %s (trend %s) - will appear as skipped", cluster_id, trend_id)
     return {"cluster_results": list(state.get("cluster_results", []))}
 
   # Build a minimal state snapshot so the dashboard sees the merge
@@ -196,6 +197,7 @@ def pop_cluster_node(state: AgentState) -> dict:
     "db_trend_lifecycle": cluster.get("db_trend_lifecycle"),
     "db_trend_last_seen": cluster.get("db_trend_last_seen"),
     "db_trend_last_verified": cluster.get("db_trend_last_verified"),
+    "db_trend_low_confidence": cluster.get("db_trend_low_confidence", False),
     
     # Reset accumulators for the new cluster
     "search_queries": [],

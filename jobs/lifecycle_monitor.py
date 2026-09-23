@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -22,12 +22,7 @@ load_dotenv()
 
 from layers.shared.db import get_connection
 
-logging.basicConfig(
-  level=logging.INFO,
-  format="%(asctime)s | %(name)-36s | %(levelname)-7s | %(message)s",
-  datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jobs.lifecycle_monitor")
 
 # Tunables
 DECLINING_THRESHOLD_DAYS = 14   # No new posts in 14 days → Declining
@@ -118,7 +113,7 @@ def run_lifecycle_monitor() -> None:
       # Already Declining - promote to Latent if silence exceeds 21 days
       if silence >= LATENT_THRESHOLD_DAYS:
         logger.info(
-          "Trend '%s' [%s]: %.1f days silent → Latent", name, trend_id, silence
+          "Trend '%s' [%s]: %.1f days silent -> Latent", name, trend_id, silence
         )
         update_lifecycle(trend_id, LATENT_STATUS, history)
         latent_count += 1
@@ -132,7 +127,7 @@ def run_lifecycle_monitor() -> None:
       # Real trend (Emergence/Growth/Resurfacing) - mark Declining if silent for 14 days
       if silence >= DECLINING_THRESHOLD_DAYS:
         logger.info(
-          "Trend '%s' [%s]: %.1f days silent → Declining", name, trend_id, silence
+          "Trend '%s' [%s]: %.1f days silent -> Declining", name, trend_id, silence
         )
         update_lifecycle(trend_id, DECLINING_STATUS, history)
         declining_count += 1
@@ -145,7 +140,7 @@ def run_lifecycle_monitor() -> None:
       # Isolated incidents never grew, so skip Declining entirely - go straight to Latent
       if silence >= LATENT_THRESHOLD_DAYS:
         logger.info(
-          "Trend '%s' [%s]: Isolated incident, %.1f days silent → Latent (no Declining stage)",
+          "Trend '%s' [%s]: Isolated incident, %.1f days silent -> Latent (no Declining stage)",
           name, trend_id, silence
         )
         update_lifecycle(trend_id, LATENT_STATUS, history)

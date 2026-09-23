@@ -22,12 +22,15 @@ async def scrape_youtube(client, usernames: list[str], limit_posts: int) -> list
         "maxResultsShorts": limit_posts,
         "subtitlesLanguage": "en",
         "downloadSubtitles": True,
-      }
+      },
+      logger=None,
     )
 
-    async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    async for item in client.dataset(run.default_dataset_id).iterate_items():
       if "error" in item:
-        logger.warning(f"[YT] Apify returned error in creator item: {item.get('error')}")
+        target = item.get("url") or item.get("input", "")
+        msg = f" for '{target}'" if target else ""
+        logger.warning(f"[YT] Channel fetch failed{msg}: {item['error']}")
       elif item.get("id") or item.get("videoUrl"):
         posts.append(norm_youtube(item, item.get("channelName", "")))
   except Exception as e:
@@ -59,12 +62,13 @@ async def scrape_youtube_explore(client, limit_posts: int) -> list[NormalizedPos
         "maxResultsShorts": limit_posts,
         "subtitlesLanguage": "en",
         "downloadSubtitles": True,
-      }
+      },
+      logger=None,
     )
 
-    async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    async for item in client.dataset(run.default_dataset_id).iterate_items():
       if "error" in item:
-        logger.warning(f"[YT] Apify returned error in explore item: {item.get('error')}")
+        logger.warning(f"[YT] Explore query '{random_query}' failed: {item['error']}")
       elif item.get("id") or item.get("videoUrl"):
         posts.append(norm_youtube(item, "explore", "explore_feed"))
   except Exception as e:

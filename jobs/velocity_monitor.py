@@ -20,12 +20,7 @@ from layers.analysis.db.queries import (
   update_trend_velocity_monitor,
 )
 
-logging.basicConfig(
-  level=logging.INFO,
-  format="%(asctime)s | %(name)-36s | %(levelname)-7s | %(message)s",
-  datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jobs.velocity_monitor")
 
 # Tunables 
 SBERT_MODEL_NAME = "all-MiniLM-L6-v2" 
@@ -172,4 +167,4 @@ async def run_velocity_monitor() -> int:
 
 if __name__ == "__main__":
   count = asyncio.run(run_velocity_monitor())
-  print(f"\nVelocity monitor completed. Processed {count} trends.")
+  logger.info("Velocity monitor completed. Processed %d trends.", count)

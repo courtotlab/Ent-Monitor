@@ -84,6 +84,9 @@ CREATE TABLE trends (
     velocity_growth_rate    REAL,               -- Posts/hour change rate (+ve = rising, -ve = falling)
     velocity_check_count    INTEGER DEFAULT 0,  -- Number of times velocity monitor has checked this (max 3)
 
+    -- Reliability and verification audit flags
+    low_confidence          BOOLEAN DEFAULT FALSE,  -- TRUE if classification fell back to defaults or had unresolvable verification conflicts
+
 
     CONSTRAINT chk_trends_label CHECK (label IN ('HIGH', 'MODERATE', 'LOW')),
     CONSTRAINT chk_trends_lifecycle CHECK (lifecycle_status IN (

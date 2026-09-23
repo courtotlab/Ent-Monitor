@@ -289,6 +289,7 @@ def _match_clusters_to_db_trends(validated_clusters: list[dict[str, object]]) ->
       cluster["db_trend_lifecycle"] = matched["lifecycle_status"]
       cluster["db_trend_last_seen"] = matched["last_seen_at"]
       cluster["db_trend_last_verified"] = matched["last_verified_at"]
+      cluster["db_trend_low_confidence"] = matched.get("low_confidence", False)
 
       if not cluster.get("search_context") and matched.get("search_context"):
         cluster["search_context"] = matched["search_context"]
@@ -410,7 +411,7 @@ def observe_node(state: AgentState) -> dict:
     else:
       posts.append(p)
 
-  print(f"\n[OBSERVE] Analyzing batch of {len(posts)} incoming posts...")
+  logger.info("OBSERVE: Analyzing batch of %d incoming posts...", len(posts))
   if not posts:
     return {"clusters_queue": [], "cluster_results": []}
 

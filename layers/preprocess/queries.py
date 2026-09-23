@@ -1,8 +1,4 @@
-import json
-from datetime import UTC, datetime
-
-
-from psycopg2.extras import Json, execute_values
+from psycopg2.extras import execute_values
 from layers.ingestion.shared.models import RawPostDict
 
 from layers.shared.db import get_connection

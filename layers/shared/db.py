@@ -9,14 +9,9 @@ load_dotenv()
 
 def get_database_url() -> str:
   url = os.getenv("DATABASE_URL")
-  if url:
-    return url
-  host = os.getenv("DB_HOST", "localhost")
-  port = os.getenv("DB_PORT", "5432")
-  name = os.getenv("DB_NAME", "ent_surveillance")
-  user = os.getenv("DB_USER", "ent_admin")
-  password = os.getenv("DB_PASSWORD", "localdevpassword")
-  return f"postgresql://{user}:{password}@{host}:{port}/{name}"
+  if not url:
+    raise ValueError("DATABASE_URL environment variable is required")
+  return url
 
 
 @contextmanager

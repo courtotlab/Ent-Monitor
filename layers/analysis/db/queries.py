@@ -78,7 +78,8 @@ def find_nearest_trend(centroid: list[float], threshold: float = 0.95) -> dict |
           SELECT trend_id, label, risk_score, search_context, post_count,
                  lifecycle_status, verification_status, last_seen_at,
                  last_verified_at,
-                 1 - (centroid <=> %s::vector) AS similarity
+                 1 - (centroid <=> %s::vector) AS similarity,
+                 COALESCE(low_confidence, false) AS low_confidence
           FROM trends
           WHERE centroid IS NOT NULL
             AND (centroid <=> %s::vector) < %s
@@ -102,6 +103,7 @@ def find_nearest_trend(centroid: list[float], threshold: float = 0.95) -> dict |
         "last_seen_at": row[7].isoformat() if row[7] else None,
         "last_verified_at": row[8].isoformat() if row[8] else None,
         "similarity": row[9],
+        "low_confidence": row[10],
       }
   except Exception as exc:
     logger.warning("DB: pgvector KNN query failed - %s", exc)
@@ -322,10 +324,12 @@ def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> Non
              verification_status, lifecycle_status, first_detected_at, last_seen_at,
              last_verified_at,
              abstract, search_context, trend_name, harm_mechanism, evidence, centroid,
-             lifecycle_history, should_monitor, velocity_check_count)
+             lifecycle_history, should_monitor, velocity_check_count,
+             low_confidence)
           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector,
                   jsonb_build_array(jsonb_build_object('date', NOW(), 'status', %s, 'post_count', %s)),
-                  %s, CASE WHEN %s THEN 0 ELSE 0 END)
+                  %s, CASE WHEN %s THEN 0 ELSE 0 END,
+                  %s)
           ON CONFLICT (trend_id) DO UPDATE SET
             post_count          = trends.post_count + EXCLUDED.post_count,
             risk_score          = GREATEST(trends.risk_score, EXCLUDED.risk_score),
@@ -361,14 +365,16 @@ def write_cluster_to_db(state: dict, centroid: list[float] | None = None) -> Non
             harm_mechanism      = COALESCE(EXCLUDED.harm_mechanism, trends.harm_mechanism),
             centroid            = COALESCE(EXCLUDED.centroid, trends.centroid),
             velocity_check_count= CASE WHEN EXCLUDED.should_monitor THEN 0 ELSE trends.velocity_check_count END,
-            should_monitor      = EXCLUDED.should_monitor OR trends.should_monitor
+            should_monitor      = EXCLUDED.should_monitor OR trends.should_monitor,
+            low_confidence      = EXCLUDED.low_confidence
         """,
         (trend_id, label, risk_score, post_count, Json(platforms), Json(slang_terms),
          verification, lifecycle,
          now, now, now, abstract or None, search_context or None, trend_name or None, harm_mechanism or None,
          Json(evidence_data) if evidence_data else None, centroid_str,
          lifecycle, post_count,
-         should_monitor, should_monitor),
+         should_monitor, should_monitor,
+         low_confidence),
       )
 
       # 4. Update posts - handle re-assignment from old trends

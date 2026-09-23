@@ -26,7 +26,7 @@ class VerifyResult(BaseModel):
 def verify_node(state: AgentState) -> dict:
   """VERIFY node - checks citations, then LLM evaluates relevance + consistency."""
   # Ping databases to catch LLM hallucinations from CLASSIFY
-  print("  [VERIFY] Fact-checking LLM citations against databases...")
+  logger.info("VERIFY: Fact-checking LLM citations against databases...")
   citations = state.get("citations", [])
   evidence = state.get("evidence", [])
   label = state.get("label", "MODERATE")

@@ -73,6 +73,7 @@ class AgentState(TypedDict):
   db_trend_lifecycle: str | None      # current lifecycle stage in DB
   db_trend_last_seen: str | None      # ISO timestamp of last activity
   db_trend_last_verified: str | None  # ISO timestamp of last full classification; None/old = verdict stale → re-investigate
+  db_trend_low_confidence: bool | None # existing low_confidence flag from DB
   centroid: list[float]               # SBERT vector from OBSERVE
 
   #  Research accumulator (append-only)

@@ -82,7 +82,7 @@ def _tag_source_tier(item: EvidenceItem) -> EvidenceItem:
 
 def research_node(state: AgentState) -> dict:
   """RESEARCH node - gathers evidence via fixed tool cascade."""
-  print(f"  [RESEARCH] Investigating: {state.get('search_context', 'trend')[:50]}...")
+  logger.info("RESEARCH: Investigating: %s...", state.get("search_context", "trend")[:50])
   evidence_gap = state.get("evidence_gap")
   search_context = state.get("search_context", "")
   prior_queries = state.get("search_queries", [])

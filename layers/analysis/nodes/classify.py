@@ -222,7 +222,7 @@ def _invoke_classify(prompt: str) -> ClassificationResult:
 
 def classify_node(state: AgentState) -> dict:
   """CLASSIFY node - single-shot classification with failure fallback."""
-  print("  [CLASSIFY] Synthesizing evidence to determine safety label...")
+  logger.info("CLASSIFY: Synthesizing evidence to determine safety label...")
   cluster_id = state.get("cluster_id", "unknown")
 
   prompt = _build_prompt(state)

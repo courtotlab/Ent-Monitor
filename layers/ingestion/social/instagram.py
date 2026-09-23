@@ -1,8 +1,9 @@
 import random
+import logging
 
 from layers.ingestion.shared.models import NormalizedPost
 from layers.ingestion.shared.normalizer import extract_id, norm_instagram
-import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,9 +19,10 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
         "resultsType": "posts",
         "resultsLimit": limit_posts,
         "proxyConfiguration": {"useApifyProxy": True},
-      }
+      },
+      logger=None,
     )
-    async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    async for item in client.dataset(run.default_dataset_id).iterate_items():
       shortCode = item.get("shortCode")
       if shortCode and len(post_urls) < 5 * len(profile_urls):
         post_urls.append(f"https://www.instagram.com/p/{shortCode}/")
@@ -29,7 +31,9 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
           norm_instagram(item, "creator_monitor", item.get("ownerUsername", ""))
         )
       elif "error" in item:
-        logger.warning(f"[IG] Apify returned error in creator item: {item.get('error')}")
+        target = item.get("url") or item.get("inputUrl", "")
+        msg = f" for '{target}'" if target else ""
+        logger.warning(f"[IG] Creator fetch failed{msg}: {item['error']}")
   except Exception as e:
     logger.error(f"[IG] Creator scrape error: {e}")
 
@@ -46,9 +50,10 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
         "resultsType": "comments",
         "resultsLimit": limit_engagers,
         "proxyConfiguration": {"useApifyProxy": True},
-      }
+      },
+      logger=None,
     )
-    async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    async for item in client.dataset(run.default_dataset_id).iterate_items():
       username = item.get("ownerUsername") or item.get("username")
       if username and username.lower() not in handle_set:
         engagers.add(username)
@@ -66,13 +71,16 @@ async def scrape_instagram(client, profile_urls: list[str], limit_posts: int, li
           "resultsType": "posts",
           "resultsLimit": posts_per_engager,
           "proxyConfiguration": {"useApifyProxy": True},
-        }
+        },
+        logger=None,
       )
-      async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+      async for item in client.dataset(run.default_dataset_id).iterate_items():
         if "error" not in item and (item.get("id") or item.get("shortCode")):
           posts.append(norm_instagram(item, "engager", item.get("ownerUsername", "")))
         elif "error" in item:
-          logger.warning(f"[IG] Apify returned error in engager item: {item.get('error')}")
+          target = item.get("url") or item.get("inputUrl", "")
+          msg = f" for '{target}'" if target else ""
+          logger.warning(f"[IG] Engager fetch failed{msg}: {item['error']}")
     except Exception as e:
       logger.error(f"[IG] Engager posts fetch error: {e}")
 
@@ -91,13 +99,14 @@ async def scrape_instagram_explore(client, limit_posts: int) -> list[NormalizedP
         "resultsType": "posts",
         "resultsLimit": limit_posts,
         "proxyConfiguration": {"useApifyProxy": True},
-      }
+      },
+      logger=None,
     )
-    async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    async for item in client.dataset(run.default_dataset_id).iterate_items():
       if "error" not in item and (item.get("id") or item.get("shortCode")):
         posts.append(norm_instagram(item, "explore_feed", "explore"))
       elif "error" in item:
-        logger.warning(f"[IG] Apify returned error in explore item: {item.get('error')}")
+        logger.warning(f"[IG] Explore hashtag '#{random_tag}' failed: {item['error']}")
   except Exception as e:
     logger.error(f"[IG] Explore scrape error: {e}")
 
@@ -116,13 +125,14 @@ async def scrape_instagram_search(client, keywords: list[str], limit_posts: int,
         "resultsType": "posts",
         "resultsLimit": limit_posts,
         "proxyConfiguration": {"useApifyProxy": True},
-      }
+      },
+      logger=None,
     )
-    async for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    async for item in client.dataset(run.default_dataset_id).iterate_items():
       if "error" not in item and (item.get("id") or item.get("shortCode")):
         posts.append(norm_instagram(item, source, "search"))
       elif "error" in item:
-        logger.warning(f"[IG] Apify returned error in search item: {item.get('error')}")
+        logger.warning(f"[IG] Search query '{keywords}' failed: {item['error']}")
   except Exception as e:
     logger.error(f"[IG] Search scrape error: {e}")
 

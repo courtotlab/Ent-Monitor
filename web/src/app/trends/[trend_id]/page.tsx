@@ -8,7 +8,7 @@ import { fetchTrendDetails, type TrendDetails, type PostData } from "@/lib/api"
 import { useApi } from "@/hooks/use-api"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardAction } from "@/components/ui/card"
-import { ExternalLinkIcon, ShieldCheckIcon, ActivityIcon } from "lucide-react"
+import { ExternalLinkIcon, ShieldCheckIcon, ActivityIcon, AlertTriangleIcon } from "lucide-react"
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -160,7 +160,26 @@ export default function TrendDetailsPage() {
             </div>
 
             <div className="flex flex-col gap-2">
-              <h1 className="text-3xl font-bold tracking-tight">{data.trend.trend_name || formatTrendName(trendId)}</h1>
+              <div className="flex flex-wrap items-center gap-3">
+                <h1 className="text-3xl font-bold tracking-tight">{data.trend.trend_name || formatTrendName(trendId)}</h1>
+                {data.trend.low_confidence && (
+                  <Badge variant="outline" className="bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30 gap-1.5 py-1 px-2.5 text-xs font-semibold">
+                    <AlertTriangleIcon className="h-3.5 w-3.5" />
+                    Low Confidence
+                  </Badge>
+                )}
+              </div>
+              {data.trend.low_confidence && (
+                <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-800 dark:text-amber-300 mt-1">
+                  <AlertTriangleIcon className="h-4 w-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                  <div className="flex flex-col gap-0.5">
+                    <span className="font-semibold">Low Confidence Classification</span>
+                    <span className="text-amber-800/80 dark:text-amber-300/80">
+                      The agent flagged this trend with low confidence due to unresolved citation conflicts or model fallback. Human clinician audit is recommended.
+                    </span>
+                  </div>
+                </div>
+              )}
               <p className="text-muted-foreground text-sm leading-relaxed mt-2">
                 {data.trend.abstract || "No description available"}
               </p>
@@ -230,10 +249,17 @@ export default function TrendDetailsPage() {
                   {data.trend.verification_status}
                 </CardTitle>
                 <CardAction>
-                  <Badge variant="outline" className="bg-green-500/10 text-green-600 hover:bg-green-500/20 border-0 dark:text-green-400">
-                    <ShieldCheckIcon className="mr-1 h-3 w-3" />
-                    Status
-                  </Badge>
+                  {data.trend.low_confidence ? (
+                    <Badge variant="outline" className="bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 border-amber-500/30 dark:text-amber-400">
+                      <AlertTriangleIcon className="mr-1 h-3 w-3" />
+                      Low Conf.
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="bg-green-500/10 text-green-600 hover:bg-green-500/20 border-0 dark:text-green-400">
+                      <ShieldCheckIcon className="mr-1 h-3 w-3" />
+                      Status
+                    </Badge>
+                  )}
                 </CardAction>
               </CardHeader>
             </Card>

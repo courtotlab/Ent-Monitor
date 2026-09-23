@@ -43,7 +43,7 @@ def probe_known(state: AgentState) -> Command:
     dated_query = _pubmed_date_filter(query, since_iso)
     cutoff_label = (since_iso or "all time")[:10]
 
-    print(f"  [PROBE] Evidence delta for known trend {matched_id} since {cutoff_label}...")
+    logger.info("PROBE: Evidence delta for known trend %s since %s...", matched_id, cutoff_label)
     try:
         results = pubmed_search(dated_query, max_results=PROBE_MAX_RESULTS)
     except Exception as exc:
@@ -52,10 +52,16 @@ def probe_known(state: AgentState) -> Command:
 
     if results:
         logger.info(
-            "PROBE: %d new publication(s) for trend %s since %s - escalating to RESEARCH",
+            "PROBE: %d new publication(s) for trend %s since %s - escalating to RESEARCH (re-evaluating confidence)",
             len(results), matched_id, cutoff_label,
         )
-        return Command(goto="research")
+        return Command(
+            goto="research",
+            update={
+                "evidence": results,
+                "low_confidence": False,
+            },
+        )
 
     logger.info("PROBE: no new publications for trend %s since %s - proceeding to MERGE", matched_id, cutoff_label)
     return Command(goto="merge_known")

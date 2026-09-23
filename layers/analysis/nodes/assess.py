@@ -72,7 +72,6 @@ def build_evidence_gap(state: AgentState, score: float) -> EvidenceGap:
 def assess_node(state: AgentState) -> dict:
   """Compute evidence score and write it to state. (Routing happens in graph.py)."""
   score = compute_evidence_score(state)
-  print(f"  [ASSESS] Evidence quality score: {score:.2f}/1.00")
   logger.info(
     "ASSESS: evidence_score=%.3f (threshold=%.2f, retries_left=%d)",
     score,

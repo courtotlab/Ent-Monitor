@@ -34,6 +34,7 @@ export interface TrendData {
   discovery_source: string | null
   velocity_growth_rate?: number | null
   should_monitor?: boolean
+  low_confidence?: boolean
   evidence?: { url: string; title: string; source: string; pmid: string | null }[]
   harm_mechanism?: string | null
   lifecycle_history?: { date: string; status: LifecycleStatus; post_count: number }[]

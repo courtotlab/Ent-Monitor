@@ -20,6 +20,7 @@ export async function GET(
         first_detected_at, last_seen_at,
         trend_name, abstract, verification_status,
         discovery_source, velocity_growth_rate, should_monitor,
+        COALESCE(low_confidence, false) AS low_confidence,
         COALESCE(evidence, '[]'::jsonb) AS evidence,
         harm_mechanism,
         COALESCE(lifecycle_history, '[]'::jsonb) AS lifecycle_history,

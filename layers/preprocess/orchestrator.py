@@ -17,7 +17,7 @@ from layers.preprocess.queries import (
 from layers.ingestion.shared.models import RawPostDict
 from layers.preprocess.semantic_filter import SBERT_THRESHOLD, SbertFilter
 import logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("layers.preprocess.orchestrator")
 
 
 @dataclass
@@ -98,14 +98,14 @@ def process_posts(posts: list[RawPostDict]) -> PreprocessStats:
 
 
 def _print_report(stats: PreprocessStats, quality_stats) -> None:
-  logger.info(f"\nPreprocessing DB Batch")
+  logger.info("\nPreprocessing DB Batch")
   logger.info(f" Input posts: {stats.input_total}")
   logger.info(f" Quality passed: {stats.quality_passed}")
   logger.info(f" too short: {quality_stats.too_short}")
   logger.info(f" non-english: {quality_stats.non_english}")
   logger.info(f" SBERT scored: {stats.sbert_scored}")
   logger.info(f" SBERT >= {SBERT_THRESHOLD}: {stats.sbert_passed}")
-  logger.error(f" SBERT < {SBERT_THRESHOLD}: {stats.sbert_failed}")
+  logger.info(f" SBERT < {SBERT_THRESHOLD}: {stats.sbert_failed}")
   if stats.by_source:
     logger.info(" By source:")
     for source, counts in sorted(stats.by_source.items()):
@@ -128,7 +128,4 @@ def main():
 
 
 if __name__ == "__main__":
-  from layers.preprocess import _preprocess_logger
-  logger.handlers = _preprocess_logger.handlers
-  logger.setLevel(_preprocess_logger.level)
   main()

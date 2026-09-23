@@ -13,6 +13,7 @@ export async function GET() {
         first_detected_at, last_seen_at,
         trend_name, abstract, verification_status,
         discovery_source, velocity_growth_rate,
+        COALESCE(low_confidence, false) AS low_confidence,
         COALESCE(slang_terms, '[]'::jsonb) AS slang_terms
       FROM trends
       ORDER BY last_seen_at DESC NULLS LAST, first_detected_at DESC
