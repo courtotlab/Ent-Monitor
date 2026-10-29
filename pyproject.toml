@@ -7,7 +7,9 @@ requires-python = ">=3.13"
 dependencies = [
     "apify>=3.4.1",
     "beautifulsoup4>=4.15.0",
+    "brotli>=1.2.1",
     "ddgs",
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
     "fastapi>=0.115.0",
     "hdbscan>=0.8.40",
     "langchain-openai>=0.3.0",
